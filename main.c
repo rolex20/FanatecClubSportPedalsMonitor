@@ -1,23 +1,21 @@
 /*
- * Click nbfs://nbhost/SystemFileSystem/Templates/Licenses/license-default.txt to change this license
- * Click nbfs://nbhost/SystemFileSystem/Templates/cFiles/main.c to edit this template
+ * License: https://github.com/rolex20/FanatecClubSportPedalsMonitor/blob/main/LICENSE
  */
 
 /* 
  * File:   main.c
- * Author: ralch
+ * Author: rolex20
  *
  * Created on January 21, 2023, 10:06 PM
  * 
- * Reporta un error si el pedal izquierdo de mi "Fanatec ClubSport Pedals V2 US" 
- * esta enviando valores malos.
+ * Created to report errors if the left pedal(clutch) of my "Fanatec ClubSport Pedals V2 US" is generating noise.
  * 
  * 
- * Fue necesario agregar c:\windows\system32\winmm.dll en 
+ * I had to dd c:\windows\system32\winmm.dll in
  * Run->Set-Project-Configuration->Customize->Build->Linker->Libraries->Add-Library-File
- * segun lo requerido por joyGetPosEx() en https://learn.microsoft.com/en-us/previous-versions/ms709354(v=vs.85)
+ * according to the required by joyGetPosEx() en https://learn.microsoft.com/en-us/previous-versions/ms709354(v=vs.85)
  * 
- * Based on samples from 
+ * Used samples from 
  * https://social.msdn.microsoft.com/forums/vstudio/en-US/af28b35b-d756-4d87-94c6-ced882ab20a5/reading-input-data-from-joystick-in-visual-basic
  * 
  * 
@@ -96,7 +94,7 @@ HELP:
           puts ("                       Use: 266 for JOY_RETURNRAWDATA | JOY_RETURNR | JOY_RETURNY\n");
           puts ("                       Default=JOY_RETURNALL\n");
           puts ("       idle:           Use IDLE priority class.\n");
-          puts ("       belownormal:    Use IDLE priority class.\n");
+          puts ("       belownormal:    Use BELOW_NORMAL priority class.\n");
           puts ("       affinitymask:   Specifies the processor affinity mask as a hexadecimal number.\n");
           puts ("Note: Fanatec-ClubSport-Pedals-V2 typically has VendorID=&H0EB7 and ProductID=&H1839\n");
           
