@@ -12,7 +12,7 @@ The program is extremely light and it barely consumes any CPU resources which is
 
 If you run the program without parameters, the program will print help.
 
-And in my case, this is how I run this program when my computer starts:
+And in my case, this is how I run this program when my computer starts (I have a 12700K CPU, so I like it to run on the efficient cores only with the specific affinity mask but that is optional):
 
 
 The latest release of this program is built with NetBeans 18.  I have been using this program for a year and it works just fine for me so I decided to share it in case it is useful to somebody else.  The "rudder" warning is said by the sayrudder.ps1 powershell script.  So my program simply calls powershell with that script to make your PC talk to you, I know it's lazy but it works ok.  The script should be placed in the same directory as the .exe program.
