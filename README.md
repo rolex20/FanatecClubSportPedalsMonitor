@@ -11,11 +11,14 @@ The program is extremely light and it barely consumes any CPU resources which is
 
 If you run the program without parameters, the program will print some help.
 
-And in my case, this is how I run this program:
+And in my case, this is how I run this program when my computer starts:
 
-The latest release of this program is built with NetBeans 18.  I have been using this program for more than a year and it works just fine for me so I decided to share it in case it is useful to somebody else.  The "rudder" warning is said by the sayrudder.ps1 powershell script.  So my program simply calls powershell with that script to make your PC talk to you, I know it's lazy but it works ok.
 
-The program can be used with any type of control, any brand, you just need to run it in verbose mode to find out your control id and the axis id you want to monitor.   However, in my case it works because the pedals are not really used that much when flying, but if the axis you would like to “fix” is the X, or Y which is used all the time, then there is not too much this program can do unless you are able to fine tune parameters so much, so good luck with that.
+The latest release of this program is built with NetBeans 18.  I have been using this program for more than a year and it works just fine for me so I decided to share it in case it is useful to somebody else.  The "rudder" warning is said by the sayrudder.ps1 powershell script.  So my program simply calls powershell with that script to make your PC talk to you, I know it's lazy but it works ok.  The script should be placed in the same directory as the .exe program.
+
+If you decide to build this program from source, I added a few notes in main.c regarding some system libraries used and you might also want to delete a step in the makefiles where I copy the binary to my own C:\users\[myusername]\downloads.  The makefile produces an MinGW64 .exe file.
+
+The program can be used with any type of control, any brand, you just need to run it in verbose mode to find out your control id and the axis id you want to monitor.   However, in my case it works because the pedals are not really used that much when flying, but if the axis you would like to “fix” is the X, or Y which is used all the time, then there is not too much this program can do unless you are able to fine tune parameters so much, so good luck with that. 
 
 Using this program makes sense for me because if one of my pedals is starting to generate noise, then my plane is going to go in the wrong direction so if I hear the warning, then I just push it a few times and the warning goes away and then I can continue flying and sporadically/actively use the rudder pedals if I am just cruising/fighting.  
 
