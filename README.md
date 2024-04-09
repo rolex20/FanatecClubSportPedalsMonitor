@@ -14,6 +14,7 @@ If you run the program without parameters, the program will print some help.
 And in my case, this is how I run this program:
 
 The latest release of this program is built with NetBeans 18.  I have been using this program for more than a year and it works just fine for my so I decided to share it in case it is useful to somebody else.
+
 The program can be used with any type of control, any brand, you just need to run it in verbose mode to find out your control id and the axis id you want to monitor.   However, in my case it works because the pedals are not really used that much when flying, but if the axis you would like to “fix” is the X, or Y which is used all the time, then there is not too much this program can do unless you are able to fine tune parameters so much, so good luck with that.
 
 
