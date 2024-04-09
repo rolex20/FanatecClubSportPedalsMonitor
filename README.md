@@ -13,9 +13,14 @@ If you run the program without parameters, the program will print some help.
 
 And in my case, this is how I run this program:
 
-The latest release of this program is built with NetBeans 18.  I have been using this program for more than a year and it works just fine for my so I decided to share it in case it is useful to somebody else.
+The latest release of this program is built with NetBeans 18.  I have been using this program for more than a year and it works just fine for me so I decided to share it in case it is useful to somebody else.  The "rudder" warning is said by the sayrudder.ps1 powershell script.  So my program simply calls powershell with that script to make your PC talk to you, I know it's lazy but it works ok.
 
 The program can be used with any type of control, any brand, you just need to run it in verbose mode to find out your control id and the axis id you want to monitor.   However, in my case it works because the pedals are not really used that much when flying, but if the axis you would like to “fix” is the X, or Y which is used all the time, then there is not too much this program can do unless you are able to fine tune parameters so much, so good luck with that.
+
+Using this program makes sense for me because if one of my pedals is starting to generate noise, then my plane is going to go in the wrong direction so if I hear the warning, then I just push it a few times and the warning goes away and then I can continue flying and sporadically/actively use the rudder pedals if I am just cruising/fighting.  
+
+If I am actively pushing the pedals and I hear the warning I would ignore it because I know I am the one generating the input, however that barely happens because the program is designed to detect movement in a specific area where the noise is generated in my case.   Some times that noise might be caused by my own movements but that rarely happens, most of the time that area where the noise is generated/detected is caused by the hardware problem in my pedals.
+
 
 
 
