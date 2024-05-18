@@ -95,7 +95,7 @@ HELP:
           puts ("                       Default=JOY_RETURNALL\n");
           puts ("       idle:           Use IDLE priority class.\n");
           puts ("       belownormal:    Use BELOW_NORMAL priority class.\n");
-          puts ("       affinitymask:   Specifies the processor affinity mask as a hexadecimal number.\n");
+          puts ("       affinitymask:   Specifies the processor affinity mask as a decimal number.\n");
           puts ("Note: Fanatec-ClubSport-Pedals-V2 typically has VendorID=&H0EB7 and ProductID=&H1839\n");
           
           exit(EXIT_SUCCESS);
@@ -200,8 +200,20 @@ char *lwan_uint32_to_str(uint32_t value, char buffer[static INT_TO_STR_BUFFER_SI
 
 
 
-
 int main(int argc, char** argv) {
+    
+    /* Simplified Single Instance Checker */
+    HANDLE hMutex = CreateMutex(NULL, TRUE, "fanatec_monitor_single_instance_mutex");
+    DWORD waitResult = WaitForSingleObject(hMutex, 0);
+    if (waitResult != WAIT_OBJECT_0) {
+        system("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe  .\\sayDuplicateInstance.ps1");
+        perror("Another instance is already running. ");
+        CloseHandle(hMutex);
+        exit(1);
+    }
+    
+    
+
     UINT joy_ID      = 17; // impossible value
     DWORD joy_Flags  = JOY_RETURNALL;  
     UINT iterations  = 1;  
@@ -281,7 +293,9 @@ int main(int argc, char** argv) {
         Sleep(sleep_Time);
     }
     
- 
+    /* This is almost just for style, since windows releases,closes them if the program dies/crashes */
+    ReleaseMutex(hMutex);
+    CloseHandle(hMutex);
     
     return (EXIT_SUCCESS);
 }
