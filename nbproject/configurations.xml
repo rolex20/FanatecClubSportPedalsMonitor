@@ -76,5 +76,39 @@
       <item path="main.c" ex="false" tool="0" flavor2="0">
       </item>
     </conf>
+    <conf name="Release_RaptorLake" type="1">
+      <toolsSet>
+        <compilerSet>default</compilerSet>
+        <dependencyChecking>true</dependencyChecking>
+        <rebuildPropChanged>false</rebuildPropChanged>
+      </toolsSet>
+      <compileType>
+        <cTool>
+          <developmentMode>6</developmentMode>
+          <stripSymbols>true</stripSymbols>
+          <architecture>2</architecture>
+          <standard>10</standard>
+          <commandLine>-march=raptorlake</commandLine>
+        </cTool>
+        <ccTool>
+          <developmentMode>5</developmentMode>
+        </ccTool>
+        <fortranCompilerTool>
+          <developmentMode>5</developmentMode>
+        </fortranCompilerTool>
+        <asmTool>
+          <developmentMode>5</developmentMode>
+        </asmTool>
+        <linkerTool>
+          <output>${CND_DISTDIR}/${CND_CONF}/${CND_PLATFORM}/fanatecmonitor_RaptorLake</output>
+          <stripSymbols>true</stripSymbols>
+          <linkerLibItems>
+            <linkerLibFileItem>C:/Windows/System32/winmm.dll</linkerLibFileItem>
+          </linkerLibItems>
+        </linkerTool>
+      </compileType>
+      <item path="main.c" ex="false" tool="0" flavor2="10">
+      </item>
+    </conf>
   </confs>
 </configurationDescriptor>

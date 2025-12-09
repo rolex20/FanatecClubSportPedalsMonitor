@@ -22,6 +22,14 @@ CND_ARTIFACT_PATH_Release=dist/Release/mingw-w64-Windows/fanatecmonitor
 CND_PACKAGE_DIR_Release=dist/Release/mingw-w64-Windows/package
 CND_PACKAGE_NAME_Release=fanatecmonitor.tar
 CND_PACKAGE_PATH_Release=dist/Release/mingw-w64-Windows/package/fanatecmonitor.tar
+# Release_RaptorLake configuration
+CND_PLATFORM_Release_RaptorLake=mingw-w64-Windows
+CND_ARTIFACT_DIR_Release_RaptorLake=dist/Release_RaptorLake/mingw-w64-Windows
+CND_ARTIFACT_NAME_Release_RaptorLake=fanatecmonitor_RaptorLake
+CND_ARTIFACT_PATH_Release_RaptorLake=dist/Release_RaptorLake/mingw-w64-Windows/fanatecmonitor_RaptorLake
+CND_PACKAGE_DIR_Release_RaptorLake=dist/Release_RaptorLake/mingw-w64-Windows/package
+CND_PACKAGE_NAME_Release_RaptorLake=fanatecmonitor.tar
+CND_PACKAGE_PATH_Release_RaptorLake=dist/Release_RaptorLake/mingw-w64-Windows/package/fanatecmonitor.tar
 #
 # include compiler specific variables
 #
