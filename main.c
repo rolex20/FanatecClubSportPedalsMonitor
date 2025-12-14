@@ -1,7 +1,6 @@
 /*
  * File:   main.c
  * Author: rolex20
- * Updated by: Assistant
  *
  * Purpose:
  *   Monitor Fanatec ClubSport Pedals V2 (or similar devices) for:
@@ -38,7 +37,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "windows.h"
-
+#include <mmsystem.h>
 
 #include <getopt.h>
 #include <stdint.h>
@@ -122,12 +121,40 @@ static int debug_raw_mode = 0;
 static int clutch_repeat_required = 4;
 
 /*
+ * Gas deadzone-out estimation and auto-adjust:
+ *
+ *   estimate_gas_deadzone_enabled:
+ *       When non-zero, the program estimates a suggested value for
+ *       --gas-deadzone-out based on observed maximum gas travel over
+ *       sliding windows of length gas_cooldown seconds, and prints:
+ *
+ *           [Estimate] Suggested --gas-deadzone-out: NN
+ *
+ *       The estimate is monotonically non-increasing for a given device
+ *       attachment and is advisory-only.
+ *
+ *   auto_gas_deadzone_enabled:
+ *       When non-zero, the program uses the same estimator to
+ *       automatically decrease gas_deadzone_out over time, but never
+ *       below auto_gas_deadzone_minimum. This only ever moves the
+ *       threshold downward during a session and can be used to keep
+ *       the drift detector aligned with a degrading potentiometer.
+ */
+static int estimate_gas_deadzone_enabled  = 0;
+static int auto_gas_deadzone_enabled      = 0;
+static int auto_gas_deadzone_minimum      = 0;
+
+/*
  * Target device for auto-reconnect (0 means "not specified").
  * If both VID and PID are provided, we use them to re-find the device when disconnected.
  */
 static int target_vendor_id  = 0;
 static int target_product_id = 0;
 
+/* Some MinGW environments don't define JOY_RETURNRAWDATA. */
+#ifndef JOY_RETURNRAWDATA
+#define JOY_RETURNRAWDATA 256
+#endif
 
 /*
  * We use a dedicated buffer size for integer-to-string conversion.
@@ -255,6 +282,7 @@ FindJoystick(int targetVid, int targetPid)
  *     - gas monitoring and tuning parameters,
  *     - axis normalization & debug behavior,
  *     - clutch sample count,
+ *     - estimation/auto-adjust flags,
  *     - process priority / affinity.
  */
 static void
@@ -274,39 +302,41 @@ ParseCommandLine(int argc,
     while (1) {
         static struct option long_options[] = {
             /* Feature flags */
-            {"verbose",              no_argument,       &verbose_flag,              1},
-            {"brief",                no_argument,       &verbose_flag,              0},
-            {"monitor-clutch",       no_argument,       &monitor_clutch,            1},
-            {"monitor-gas",          no_argument,       &monitor_gas,               1},
-            {"no-axis-normalization",no_argument,       &axis_normalization_enabled,0},
-            {"debug-raw",            no_argument,       &debug_raw_mode,            1},
+            {"verbose",                       no_argument,       &verbose_flag,               1},
+            {"brief",                         no_argument,       &verbose_flag,               0},
+            {"monitor-clutch",                no_argument,       &monitor_clutch,             1},
+            {"monitor-gas",                   no_argument,       &monitor_gas,                1},
+            {"estimate-gas-deadzone-out",     no_argument,       &estimate_gas_deadzone_enabled, 1},
+            {"no-axis-normalization",         no_argument,       &axis_normalization_enabled, 0},
+            {"debug-raw",                     no_argument,       &debug_raw_mode,             1},
 
             /* Generic options (use short codes) */
-            {"help",                 no_argument,       0, 'h'},
-            {"no_buffer",            no_argument,       0, 'n'},
-            {"iterations",           required_argument, 0, 'i'},
-            {"margin",               required_argument, 0, 'm'},
-            {"flags",                required_argument, 0, 'f'},
-            {"sleep",                required_argument, 0, 's'},
-            {"joystick",             required_argument, 0, 'j'},
-            {"idle",                 no_argument,       0, 'd'},
-            {"belownormal",          no_argument,       0, 'b'},
-            {"affinitymask",         required_argument, 0, 'a'},
+            {"help",                          no_argument,       0, 'h'},
+            {"no_buffer",                     no_argument,       0, 'n'},
+            {"iterations",                    required_argument, 0, 'i'},
+            {"margin",                        required_argument, 0, 'm'},
+            {"flags",                         required_argument, 0, 'f'},
+            {"sleep",                         required_argument, 0, 's'},
+            {"joystick",                      required_argument, 0, 'j'},
+            {"idle",                          no_argument,       0, 'd'},
+            {"belownormal",                   no_argument,       0, 'b'},
+            {"affinitymask",                  required_argument, 0, 'a'},
 
             /* Gas monitor tuning */
-            {"gas-deadzone-in",      required_argument, 0, '1'},
-            {"gas-deadzone-out",     required_argument, 0, '2'},
-            {"gas-window",           required_argument, 0, '3'},
-            {"gas-cooldown",         required_argument, 0, '4'},
-            {"gas-timeout",          required_argument, 0, '5'},
-            {"gas-min-usage",        required_argument, 0, '6'},
+            {"gas-deadzone-in",               required_argument, 0, '1'},
+            {"gas-deadzone-out",              required_argument, 0, '2'},
+            {"gas-window",                    required_argument, 0, '3'},
+            {"gas-cooldown",                  required_argument, 0, '4'},
+            {"gas-timeout",                   required_argument, 0, '5'},
+            {"gas-min-usage",                 required_argument, 0, '6'},
+            {"adjust-deadzone-out-with-minimum", required_argument, 0, '8'},
 
             /* Clutch tuning */
-            {"clutch-repeat",        required_argument, 0, '7'},
+            {"clutch-repeat",                 required_argument, 0, '7'},
 
             /* Reconnect via VID/PID */
-            {"vendor-id",            required_argument, 0, 'v'},
-            {"product-id",           required_argument, 0, 'p'},
+            {"vendor-id",                     required_argument, 0, 'v'},
+            {"product-id",                    required_argument, 0, 'p'},
 
             {0, 0, 0, 0}
         };
@@ -342,9 +372,11 @@ HELP:
             puts("       --monitor-gas:      Enable Gas drift monitoring.\n");
 
             puts("   General:");
+            puts("       --verbose:          Enable verbose logging (prints axis values, config, etc.).");
+            puts("       --brief:            Disable verbose logging (default unless --verbose is used).");
             puts("       --joystick ID:      Initial Joystick ID (0-15).");
             puts("       --iterations N:     Number of iterations. Default=1. Use 0 for infinite loop.");
-            puts("       --sleep MS:         Wait time (ms) between iterations. Default=1000.");
+            puts("       --sleep MS:         Wait time (ms) between iterations. Default=1000. Must be > 0.");
             puts("       --flags N:          dwFlags. Default=JOY_RETURNALL.");
             puts("                           Use 266 for JOY_RETURNRAWDATA | JOY_RETURNR | JOY_RETURNY.");
             puts("       --margin N:         Tolerance (0-100) for clutch stickiness. Default=5.");
@@ -352,8 +384,6 @@ HELP:
             puts("       --no-axis-normalization:");
             puts("                           Do NOT invert pedal axes; use raw 0..axisMax values.");
             puts("                           Default behavior is to normalize so 0=idle, max=full.");
-            puts("       --verbose:          Enable verbose logging (prints axis values, config, etc).\n");
-            puts("       --brief:            Disable verbose logging (Default unless --verbose is used).\n");
             puts("       --debug-raw:        In verbose mode, print raw and normalized axis values.\n");
 
             puts("   Performance & Priority:");
@@ -368,7 +398,14 @@ HELP:
             puts("       --gas-timeout:      Seconds idle to assume Menu/Pause. Default=10.");
             puts("       --gas-cooldown:     Seconds between alerts. Default=60.");
             puts("       --gas-min-usage:    % minimum gas usage in a window before drift alert.");
-            puts("                           Default=20. Increase if you race gently (no full-throttle).\n");
+            puts("                           Default=20. Increase if you race gently (no full-throttle).");
+            puts("       --estimate-gas-deadzone-out:");
+            puts("                           Estimate and print suggested --gas-deadzone-out from observed");
+            puts("                           maximum gas travel over time. Requires --monitor-gas.");
+            puts("       --adjust-deadzone-out-with-minimum N:");
+            puts("                           Auto-decrease gas-deadzone-out to match observed maximum,");
+            puts("                           but never below N (0-100). Requires --monitor-gas and");
+            puts("                           --estimate-gas-deadzone-out.\n");
 
             puts("   Clutch Tuning Options (monitor-clutch only):");
             puts("       --clutch-repeat N:  Consecutive samples required for clutch noise alert.");
@@ -435,6 +472,10 @@ HELP:
             break;
         case '6':
             gas_min_usage_percent = atoi(optarg);
+            break;
+        case '8':
+            auto_gas_deadzone_minimum = atoi(optarg);
+            auto_gas_deadzone_enabled = 1;
             break;
 
         /* Clutch tuning */
@@ -505,6 +546,57 @@ HELP:
         exit(EXIT_FAILURE);
     }
 
+    if (auto_gas_deadzone_enabled) {
+        if (auto_gas_deadzone_minimum < 0 || auto_gas_deadzone_minimum > 100) {
+            fprintf(stderr, "Error: adjust-deadzone-out-with-minimum must be 0-100.\n");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    if (estimate_gas_deadzone_enabled && !monitor_gas) {
+        fprintf(stderr, "Error: --estimate-gas-deadzone-out requires --monitor-gas.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    if (auto_gas_deadzone_enabled && !monitor_gas) {
+        fprintf(stderr, "Error: --adjust-deadzone-out-with-minimum requires --monitor-gas.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    /*
+     * Auto-adjust is implemented on top of the estimator. Requiring both
+     * flags keeps behavior explicit and avoids surprising "quiet" auto-adjust.
+     */
+    if (auto_gas_deadzone_enabled && !estimate_gas_deadzone_enabled) {
+        fprintf(stderr,
+                "Error: --adjust-deadzone-out-with-minimum also requires "
+                "--estimate-gas-deadzone-out.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    /*
+     * Sanity check: it does not make sense to request an auto-adjust minimum
+     * that is higher than the current gas-deadzone-out value. In that case
+     * the auto-adjust condition can never be satisfied.
+     */
+    if (auto_gas_deadzone_enabled &&
+        auto_gas_deadzone_minimum > gas_deadzone_out) {
+        fprintf(stderr,
+                "Error: adjust-deadzone-out-with-minimum (%d) must be <= gas-deadzone-out (%d).\n",
+                auto_gas_deadzone_minimum,
+                gas_deadzone_out);
+        exit(EXIT_FAILURE);
+    }
+
+    /*
+     * Protect against sleep=0, which would effectively spin in a tight loop.
+     * This is almost never desired in a companion monitor process.
+     */
+    if (*sleep_Time == 0) {
+        fprintf(stderr, "Error: sleep must be > 0 ms.\n");
+        exit(EXIT_FAILURE);
+    }
+
     /*
      * If joystick ID is not provided but VID/PID are, we will attempt auto-detection.
      * If neither joystick ID nor VID/PID are provided, show help.
@@ -517,7 +609,7 @@ int
 main(int argc, char **argv)
 {
     /* Single-instance guard: prevent accidentally launching multiple monitors. */
-    HANDLE hMutex = CreateMutex(NULL, TRUE, "fanatec_monitor_single_instance_mutex");
+    HANDLE hMutex = CreateMutexA(NULL, TRUE, "fanatec_monitor_single_instance_mutex");
     if (hMutex == NULL || GetLastError() == ERROR_ALREADY_EXISTS) {
         system(
             "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe "
@@ -609,6 +701,10 @@ main(int argc, char **argv)
                    gas_timeout,
                    gas_cooldown,
                    gas_min_usage_percent);
+            if (estimate_gas_deadzone_enabled)
+                printf("Gas Estimation: enabled (will print [Estimate] lines).\n");
+            if (auto_gas_deadzone_enabled)
+                printf("Gas Auto-Adjust: enabled (minimum=%d).\n", auto_gas_deadzone_minimum);
         }
         if (monitor_clutch) {
             printf("Clutch Config: Margin:%u%% Repeat:%d\n",
@@ -642,10 +738,10 @@ main(int argc, char **argv)
      * In normalized space:
      *   gasIdleMax:
      *     Maximum value considered "idle".
-     *     Example: gas_deadzone_in=5, axisMax=1023 -> gasIdleMax ≈ 51.
+     *     Example: gas_deadzone_in=5, axisMax=1023 -> gasIdleMax ˜ 51.
      *   gasFullMin:
      *     Minimum value considered "full throttle".
-     *     Example: gas_deadzone_out=93, axisMax=1023 -> gasFullMin ≈ 951.
+     *     Example: gas_deadzone_out=93, axisMax=1023 -> gasFullMin ˜ 951.
      */
     DWORD gasIdleMax = axisMax * gas_deadzone_in  / 100;
     DWORD gasFullMin = axisMax * gas_deadzone_out / 100;
@@ -678,6 +774,36 @@ main(int argc, char **argv)
     DWORD lastFullThrottleTime = GetTickCount();
     DWORD lastGasActivityTime  = GetTickCount();
     DWORD lastGasAlertTime     = 0;   /* 0 means "no alert yet". */
+
+    /*
+     * Gas deadzone-out estimator state:
+     *
+     *   best_estimate_percent:
+     *     Best (i.e., lowest) suggested --gas-deadzone-out value observed so far
+     *     during the current device attachment. Starts at 100 and only moves
+     *     downward as we see evidence that the pedal cannot reach full travel.
+     *
+     *   last_printed_estimate:
+     *     Last value we printed as an estimate. We only print when the best
+     *     estimate decreases and at least gas_cooldown seconds have passed
+     *     since the previous estimate print.
+     *
+     *   estimate_window_peak_percent:
+     *     Maximum gas percentage observed in the current estimation window.
+     *     A window is approximately gas_cooldown seconds long while isRacing
+     *     is true and gas is used above the idle band.
+     *
+     *   estimate_window_start_time:
+     *     When the current estimation window started.
+     *
+     *   last_estimate_print_time:
+     *     Timestamp of the last printed [Estimate] line.
+     */
+    unsigned int best_estimate_percent        = 100U;
+    unsigned int last_printed_estimate        = 100U;
+    unsigned int estimate_window_peak_percent = 0U;
+    DWORD        estimate_window_start_time   = GetTickCount();
+    DWORD        last_estimate_print_time     = 0;
 
     if (verbose_flag)
         printf("Monitoring loop starting.\n");
@@ -714,13 +840,26 @@ main(int argc, char **argv)
                         info.dwSize  = sizeof(info);
                         info.dwFlags = joy_Flags;
 
-                        /* Reset gas/clutch state so we don't immediately alert. */
-                        lastFullThrottleTime = GetTickCount();
-                        lastGasActivityTime  = GetTickCount();
-                        isRacing             = FALSE;
-                        peakGasInWindow      = 0;
-                        lastClutchValue      = 0;
-                        repeatingClutchCount = 0;
+                        /*
+                         * Recompute axisMax and gas thresholds in case flags
+                         * or effective resolution changed for the new device.
+                         */
+                        axisMax    = (joy_Flags & JOY_RETURNRAWDATA) ? 1023 : 65535;
+                        gasIdleMax = axisMax * gas_deadzone_in  / 100;
+                        gasFullMin = axisMax * gas_deadzone_out / 100;
+
+                        /* Reset gas/clutch and estimator state so we don't immediately alert. */
+                        lastFullThrottleTime         = GetTickCount();
+                        lastGasActivityTime          = GetTickCount();
+                        isRacing                     = FALSE;
+                        peakGasInWindow              = 0;
+                        lastClutchValue              = 0;
+                        repeatingClutchCount         = 0;
+                        best_estimate_percent        = 100U;
+                        last_printed_estimate        = 100U;
+                        estimate_window_peak_percent = 0U;
+                        estimate_window_start_time   = GetTickCount();
+                        last_estimate_print_time     = 0;
 
                         break; /* Leave reconnect loop, resume main loop. */
                     } else {
@@ -822,6 +961,10 @@ main(int argc, char **argv)
                     if (!isRacing) {
                         lastFullThrottleTime = currentTime;
                         peakGasInWindow      = 0;
+                        if (estimate_gas_deadzone_enabled) {
+                            estimate_window_start_time   = currentTime;
+                            estimate_window_peak_percent = 0U;
+                        }
                         if (verbose_flag)
                             printf("Gas: Activity Resumed.\n");
                     }
@@ -839,6 +982,10 @@ main(int argc, char **argv)
                         if (verbose_flag)
                             printf("Gas: Auto-Pause (Idle for %d s).\n", gas_timeout);
                         isRacing = FALSE;
+                        if (estimate_gas_deadzone_enabled) {
+                            estimate_window_start_time   = currentTime;
+                            estimate_window_peak_percent = 0U;
+                        }
                     }
                 }
 
@@ -874,17 +1021,15 @@ main(int argc, char **argv)
                                     (unsigned int)((peakGasInWindow * 100U) / axisMax);
 
                                 /*
-                                 * Ignore windows where you never used more than
-                                 * gas_min_usage_percent of the travel.
-                                 *
-                                 * Motivation:
-                                 *   - Avoid "false positives" when you're just creeping along
-                                 *     (safety car, pit lane, taxiing, etc.).
-                                 *   - In those scenarios it's normal to never go near full throttle,
-                                 *     and that's not evidence of a drifting potentiometer.
-                                 *
-                                 * If you tend to drive entire sessions without exceeding this,
-                                 * raise this value or increase gas_window.
+                                 * Drift detection uses a strict ">" comparison vs.
+                                 * gas_min_usage_percent, while the estimator later uses
+                                 * a ">=" comparison. The drift alert is intentionally
+                                 * slightly more conservative: we only trigger if the
+                                 * peak usage clearly exceeds the configured minimum,
+                                 * whereas the estimator is willing to treat a peak
+                                 * exactly equal to the threshold as meaningful input.
+                                 * This keeps the alert logic quieter while allowing
+                                 * the estimator to learn from borderline windows.
                                  */
                                 if (percentReached > (unsigned int)gas_min_usage_percent) {
                                     char temp_num_buf[INT_TO_STR_BUFFER_SIZE];
@@ -905,6 +1050,89 @@ main(int argc, char **argv)
                                     lastGasAlertTime = currentTime;
                                 }
                             }
+                        }
+                    }
+
+                    /* ---- Gas deadzone-out estimation and optional auto-adjust ---- */
+
+                    if (estimate_gas_deadzone_enabled) {
+                        /*
+                         * Update peak usage within the current estimation window.
+                         * We only care about gas values above the idle band.
+                         */
+                        if (gasValue > gasIdleMax) {
+                            unsigned int currentPercent =
+                                (unsigned int)((gasValue * 100U) / axisMax);
+
+                            if (currentPercent > estimate_window_peak_percent)
+                                estimate_window_peak_percent = currentPercent;
+                        }
+
+                        /*
+                         * When an estimation window of approximately gas_cooldown
+                         * seconds has elapsed, evaluate whether the observed peak
+                         * suggests a lower --gas-deadzone-out value.
+                         */
+                        if ((currentTime - estimate_window_start_time) >= gas_cooldown_ms) {
+                            /*
+                             * Estimation uses a ">=" comparison against
+                             * gas_min_usage_percent. The estimator is intentionally
+                             * slightly more permissive than the drift alert:
+                             * if the peak usage is exactly equal to the minimum
+                             * threshold, it can still provide useful information
+                             * about the pedal's reachable maximum, even if we
+                             * prefer not to raise a user-facing drift alert in
+                             * that borderline case.
+                             */
+                            if (estimate_window_peak_percent >= (unsigned int)gas_min_usage_percent) {
+                                unsigned int candidate = estimate_window_peak_percent;
+
+                                if (candidate < best_estimate_percent) {
+                                    best_estimate_percent = candidate;
+
+                                    /* Always print when our best estimate decreases, but
+                                     * at most once per gas_cooldown interval.
+                                     */
+                                    if (best_estimate_percent < last_printed_estimate &&
+                                        (currentTime - last_estimate_print_time) >= gas_cooldown_ms) {
+
+                                        printf("[Estimate] Suggested --gas-deadzone-out: %u\n",
+                                               best_estimate_percent);
+
+                                        last_printed_estimate    = best_estimate_percent;
+                                        last_estimate_print_time = currentTime;
+                                    }
+
+                                    /*
+                                     * Optional auto-adjust:
+                                     *   If enabled, decrease gas_deadzone_out to the new
+                                     *   best_estimate_percent, but never below the user-
+                                     *   supplied auto_gas_deadzone_minimum. This keeps
+                                     *   the drift detector aligned with a degrading pedal
+                                     *   without dropping to unrealistic values if the
+                                     *   pedal just wasn't fully pressed in some session.
+                                     *
+                                     *   The ParseCommandLine validation ensures that:
+                                     *     auto_gas_deadzone_minimum <= gas_deadzone_out
+                                     *   so this condition is both meaningful and reachable.
+                                     */
+                                    if (auto_gas_deadzone_enabled &&
+                                        best_estimate_percent < (unsigned int)gas_deadzone_out &&
+                                        best_estimate_percent >= (unsigned int)auto_gas_deadzone_minimum) {
+
+                                        gas_deadzone_out = (int)best_estimate_percent;
+                                        gasFullMin       = axisMax * gas_deadzone_out / 100;
+
+                                        printf("[AutoAdjust] gas-deadzone-out updated to %d (min=%d)\n",
+                                               gas_deadzone_out,
+                                               auto_gas_deadzone_minimum);
+                                    }
+                                }
+                            }
+
+                            /* Start a new estimation window from this point. */
+                            estimate_window_start_time   = currentTime;
+                            estimate_window_peak_percent = 0U;
                         }
                     }
                 }

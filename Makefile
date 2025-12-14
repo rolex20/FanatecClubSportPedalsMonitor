@@ -59,9 +59,9 @@ build: .build-post
 .build-post: .build-impl
 # Add your post 'build' code here...
 	@echo "MY: Copiando el ejecutable a Downloads:"
-	${CP} ${CND_ARTIFACT_DIR_${CONF}}/fanatecmonitor.exe  /c/Users/ralch/Downloads
+	${CP} -v -u ${CND_ARTIFACT_DIR_${CONF}}/fanatecmonitor*.exe  /c/Users/ralch/Downloads
 	@echo "MY: Copiando ps1 scripts a Downloads:"
-	${CP} /C/Users/ralch/Documents/NetBeansProjects/FanatecMonitor/*.ps1 /c/Users/ralch/Downloads
+	${CP} -v -u /C/Users/ralch/Documents/NetBeansProjects/FanatecMonitor/*.ps1 /c/Users/ralch/Downloads
 	
 
 # clean
