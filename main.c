@@ -680,6 +680,19 @@ main(int argc, char **argv)
      * We overwrite from here with "NN " (percentReached + space).
      */
     char *gas_arg_ptr = gas_command_line + strlen(gas_command_line);
+    
+    /* 3. Deadzone estimation */
+    static const char speak_deadzone_prefix[] = "New deadzone estimation: ";
+    /* reserve prefix (no NUL) + INT_TO_STR_BUFFER_SIZE for digits + space + NUL */
+    static char speak_deadzone_buf[sizeof(speak_deadzone_prefix) - 1 + INT_TO_STR_BUFFER_SIZE];
+    static char *speak_deadzone_digits;
+    
+    size_t prefix_len = sizeof(speak_deadzone_prefix) - 1;
+    memcpy(speak_deadzone_buf, speak_deadzone_prefix, prefix_len);
+    speak_deadzone_digits = speak_deadzone_buf + prefix_len;
+    /* do not write NUL here; digits will overwrite following bytes */
+    
+    
 
     /* -------------------- Device capabilities -------------------- */
 
@@ -1098,6 +1111,11 @@ main(int argc, char **argv)
 
                                         printf("[Estimate] Suggested --gas-deadzone-out: %u\n",
                                                best_estimate_percent);
+                                        
+                                        /* Notify the user via TTS */
+                                        lwan_uint32_to_str(best_estimate_percent, speak_deadzone_digits);
+                                        Speak(speak_deadzone_buf);
+
 
                                         last_printed_estimate    = best_estimate_percent;
                                         last_estimate_print_time = currentTime;
