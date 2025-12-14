@@ -681,16 +681,17 @@ main(int argc, char **argv)
      */
     char *gas_arg_ptr = gas_command_line + strlen(gas_command_line);
     
-    /* 3. Deadzone estimation */
-    static const char speak_deadzone_prefix[] = "New deadzone estimation: ";
-    /* reserve prefix (no NUL) + INT_TO_STR_BUFFER_SIZE for digits + space + NUL */
-    static char speak_deadzone_buf[sizeof(speak_deadzone_prefix) - 1 + INT_TO_STR_BUFFER_SIZE];
-    static char *speak_deadzone_digits;
-    
-    size_t prefix_len = sizeof(speak_deadzone_prefix) - 1;
-    memcpy(speak_deadzone_buf, speak_deadzone_prefix, prefix_len);
-    speak_deadzone_digits = speak_deadzone_buf + prefix_len;
-    /* do not write NUL here; digits will overwrite following bytes */
+
+//    /* 3. Deadzone estimation */
+//    static const char speak_deadzone_prefix[] = "New deadzone estimation: ";
+//    /* reserve prefix (no NUL) + INT_TO_STR_BUFFER_SIZE for digits + space + NUL */
+//    static char speak_deadzone_buf[sizeof(speak_deadzone_prefix) - 1 + INT_TO_STR_BUFFER_SIZE];
+//    static char *speak_deadzone_digits;
+//    
+//    size_t prefix_len = sizeof(speak_deadzone_prefix) - 1;
+//    memcpy(speak_deadzone_buf, speak_deadzone_prefix, prefix_len);
+//    speak_deadzone_digits = speak_deadzone_buf + prefix_len;
+//    /* do not write NUL here; digits will overwrite following bytes */
     
     
 
@@ -1113,9 +1114,19 @@ main(int argc, char **argv)
                                                best_estimate_percent);
                                         
                                         /* Notify the user via TTS */
-                                        lwan_uint32_to_str(best_estimate_percent, speak_deadzone_digits);
-                                        Speak(speak_deadzone_buf);
-
+//                                        lwan_uint32_to_str(best_estimate_percent, speak_deadzone_digits);
+//                                        Speak(speak_deadzone_buf);
+                                        {
+                                            /* Keep the prefix local to this block. static -> single instance in rodata, no per-iteration copy. */
+                                            static const char speak_deadzone_prefix[] = "New deadzone estimation: ";
+                                            /* conservative space for a 32-bit unsigned decimal + space + NUL (up to 10 digits + ' ' + '\0' = 12) */
+                                            enum { UINT32_PRINT_BUF = 12 };
+                                            /* stack buffer size derives from the prefix length automatically */
+                                            char tts_buf[sizeof(speak_deadzone_prefix) + UINT32_PRINT_BUF];
+                                            int rc = snprintf(tts_buf, sizeof(tts_buf), "%s%u ",
+                                                              speak_deadzone_prefix, best_estimate_percent);
+                                            Speak(tts_buf);                                            
+                                        }
 
                                         last_printed_estimate    = best_estimate_percent;
                                         last_estimate_print_time = currentTime;
