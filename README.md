@@ -3,14 +3,14 @@
 A Windows console tool that monitors **Fanatec ClubSport Pedals V2** (and similar devices) for:
 
 - **Clutch Hall sensor noise** (used as rudder in flight sims).
-- **Gas pedal drift** (potentiometer no longer reaching full travel).
+- **Gas pedal drift** (hall-sensor/pot no longer reaching full travel - 1st gen hall sensor with issues).
 
 It runs alongside heavy simulators (DCS, MSFS, etc.) with negligible CPU usage and is intentionally **not designed for > 24h continuous runs**, so `GetTickCount()` wrap-around is not handled (and not needed in the intended use case).
 
 This project is implemented in **C (Win32 / WinMM)** and **PowerShell**, and uses techniques such as:
 
 - Joystick polling via `joyGetPosEx`.
-- Axis normalization into a human-friendly `0 .. axisMax` space.
+- Axis normalization into a user-friendly `0 .. axisMax` space.
 - State-machine–based signal analysis for clutch noise and gas drift.
 - Real-time deadzone-out estimation and optional auto-adjustment.
 - Process priority/affinity tuning to avoid impacting simulator threads.
@@ -545,3 +545,4 @@ See the `LICENSE` file in this repository for licensing details.
 ## License
 
 See the `LICENSE` file in this repository for licensing details.
+
