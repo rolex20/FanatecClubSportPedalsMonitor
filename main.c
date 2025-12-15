@@ -27,7 +27,7 @@
  * 
  * Used samples from:
  * https://social.msdn.microsoft.com/forums/vstudio/en-US/af28b35b-d756-4d87-94c6-ced882ab20a5/reading-input-data-from-joystick-in-visual-basic
- * https://tia.mat.br/posts/2014/06/23/integer_to_string_conversion.html
+ * lwan_uint32_to_str: https://tia.mat.br/posts/2014/06/23/integer_to_string_conversion.html 
  * 
  * License: https://github.com/rolex20/FanatecClubSportPedalsMonitor/blob/main/LICENSE
  * 
@@ -41,6 +41,8 @@
 
 #include <getopt.h>
 #include <stdint.h>
+
+#include <assert.h>
 
 /* Flag set by ‘--verbose’. */
 static int verbose_flag = 0;
@@ -163,7 +165,7 @@ static int target_product_id = 0;
 #define INT_TO_STR_BUFFER_SIZE 32
 
 /*
- * Optimized Integer to String Converter.
+ * Optimized Integer to String Converter (deprecated, see append_digits_from_right)
  *
  * - Writes digits backwards into the caller-provided buffer, then appends
  *   a trailing space and NUL terminator.
@@ -198,6 +200,72 @@ lwan_uint32_to_str(uint32_t value, char buffer[static INT_TO_STR_BUFFER_SIZE])
     return p;
 }
 
+
+/*
+ * append_digits_from_right(): optimized, assert-enabled RTL writer.
+ *
+ * Preconditions (caller must ensure):
+ *  - last_valid == buf + total_buf_size - 1
+ *  - total_buf_size >= 11 (10 digits for uint32 + terminating NUL)
+ *  - The buffer contains the prefix to the left of reserved tail area.
+ *
+ * Behavior:
+ *  - Writes '\0' at *last_valid, writes digits right-to-left immediately before it,
+ *    and backfills spaces (0x20) leftwards up to special_char or buffer start.
+ *  - No trailing space is written after the digits.
+ *  - Returns pointer to first digit written, or NULL on trivial sanity failure.
+ */
+static char *
+append_digits_from_right(uint32_t value, char special_char, char *last_valid, size_t total_buf_size)
+{
+    /* Debug-only validation of caller preconditions. */
+    assert(last_valid != NULL);
+    assert(total_buf_size >= 11); /* 10 digits + NUL */
+
+    /* Compute buffer start. Cast to ptrdiff_t to avoid unsigned arithmetic surprises. */
+    char *buf_start = last_valid - (ptrdiff_t)(total_buf_size - 1);
+
+    /* Single cursor: write terminating NUL then move left to last digit slot. */
+    char *cursor = last_valid;
+    *cursor-- = '\0'; /* place NUL at last_valid, then decrement cursor to last_valid-1 */
+
+    /* 
+     * Write digits Right to Left (RTL). Use do/while to handle value==0 in one pass.
+     * 
+     * PERFORMANCE NOTE: 
+     * The line below combines integer arithmetic, ASCII conversion, memory store,
+     * and pointer decrement into a single concise construct.
+     *
+     * Original approach: 
+     *     *cursor = "0123456789"[value % 10];
+     *     cursor--;
+     *
+     * Why the new approach is faster:
+     * 1. No Memory Lookup: The original approach accesses a string literal array 
+     *    stored in memory (L1 Data Cache). The new approach uses pure CPU register 
+     *    arithmetic ('0' + remainder), avoiding the load latency.
+     * 2. Instruction Pipelining: (value % 10) and the pointer decrement can often 
+     *    be executed in parallel by the CPU.
+     * 3. Compact Assembly: Compiles to a single "Store with Post-Decrement" instruction 
+     *    on supported architectures (like ARM or x86 with specific addressing modes).
+     */
+    
+    do {
+        *cursor-- = (char)('0' + (value % 10));
+        value /= 10;
+    } while (value != 0);
+
+    /* cursor now sits left of first digit; digits start at cursor + 1. */
+    char *digits_start = cursor + 1;
+
+    /* Fill left-of-digits with spaces until we find special_char or reach buf_start. */
+    while (cursor >= buf_start && *cursor != special_char) {
+        *cursor-- = ' ';
+    }
+
+    return digits_start;
+}
+
 /*
  * normalize_pedal_axis:
  *
@@ -230,25 +298,68 @@ normalize_pedal_axis(DWORD raw_value, DWORD axis_max)
     return raw_value;                   /* Already in 0..axis_max order.   */
 }
 
-/*
- * Fire-and-forget text-to-speech helper.
- * Used for relatively rare events (disconnects, etc.), so snprintf is fine.
+
+/* Fire-and-forget text-to-speech helper.
+ * Using CreateProcessA (no snprintf, no shell). 
+ * Caller passes a NUL-terminated text string (no extra quoting required).
  */
 static void
 Speak(const char *text)
 {
-    char cmd[512];
+    /* Executable path (constant). Using a static array so sizeof gives literal size if needed. */
+    static const char exe[] =
+        "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
 
-    snprintf(
-        cmd,
-        sizeof(cmd),
-        "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe "
-        "-ExecutionPolicy Bypass -File .\\saySomething.ps1 \"%s\"",
-        text
-    );
+    /* Argument prefix (notice no trailing closing-quote) */
+    static const char arg_prefix[] =
+        "-ExecutionPolicy Bypass -File .\\saySomething.ps1 \"";
 
-    system(cmd);
+    /* Mutable buffer for CreateProcess lpCommandLine; must be writable. */
+    char cmdline[512];
+
+    size_t prefix_len = sizeof(arg_prefix) - 1; /* exclude NUL */
+    size_t text_len = strlen(text);
+
+    /* Need space for prefix + text + closing quote + final NUL. */
+    if (prefix_len + text_len + 2 > sizeof(cmdline))
+        return; /* too long for buffer; drop the request */
+
+    /* Copy prefix and text into writable buffer. Use memcpy to avoid formatted I/O. */
+    memcpy(cmdline, arg_prefix, prefix_len);
+    memcpy(cmdline + prefix_len, text, text_len);
+
+    /* close the quoted argument and NUL-terminate */
+    cmdline[prefix_len + text_len] = '"';
+    cmdline[prefix_len + text_len + 1] = '\0';
+
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+    ZeroMemory(&pi, sizeof(pi));
+
+    /* CreateProcessA will modify cmdline; that's why we used a writable buffer. 
+       We pass exe as lpApplicationName to avoid shell parsing and reduce ambiguity. */
+    if (CreateProcessA(
+            exe,            /* lpApplicationName */
+            cmdline,        /* lpCommandLine (writable) */
+            NULL, NULL,     /* process/security attrs */
+            FALSE,          /* inherit handles */
+            CREATE_NO_WINDOW, /* creation flags: no console window */
+            NULL, NULL,     /* environment, current directory */
+            &si,
+            &pi)) {
+        /* Close handles promptly; we don't need to wait. */
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    } else {
+        /* Optional: fallback to system() if CreateProcessA fails. */
+        char fallback[512];
+        snprintf(fallback, sizeof(fallback), "%s %s\"", exe, cmdline);
+        system(fallback); 
+    }
 }
+
 
 /*
  * FindJoystick:
@@ -611,11 +722,9 @@ main(int argc, char **argv)
     /* Single-instance guard: prevent accidentally launching multiple monitors. */
     HANDLE hMutex = CreateMutexA(NULL, TRUE, "fanatec_monitor_single_instance_mutex");
     if (hMutex == NULL || GetLastError() == ERROR_ALREADY_EXISTS) {
-        system(
-            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe "
-            "-ExecutionPolicy Bypass -File .\\sayDuplicateInstance.ps1"
-        );
-        perror("Instance already running.");
+        static char duplicate_instance[] = "Error.  Another instance of Fanatec Monitor is already running.";
+        Speak(duplicate_instance);
+        perror(duplicate_instance);
         if (hMutex)
             CloseHandle(hMutex);
         exit(EXIT_FAILURE);
@@ -663,36 +772,12 @@ main(int argc, char **argv)
 
     /* -------------------- Command strings -------------------- */
 
-    /* 1. Clutch: fixed script, no numeric argument. */
+    /* Clutch: fixed script, no numeric argument. */
     const char *clutch_command =
         "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe "
         "-ExecutionPolicy Bypass -File .\\sayRudder.ps1";
 
-    /* 2. Gas: script requires a numeric argument (percentage reached). */
-    char gas_command_line[512];
-    strcpy(
-        gas_command_line,
-        "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe "
-        "-ExecutionPolicy Bypass -File .\\sayGas.ps1 "
-    );
-    /*
-     * gas_arg_ptr points just after ".ps1 ".
-     * We overwrite from here with "NN " (percentReached + space).
-     */
-    char *gas_arg_ptr = gas_command_line + strlen(gas_command_line);
-    
-
-//    /* 3. Deadzone estimation */
-//    static const char speak_deadzone_prefix[] = "New deadzone estimation: ";
-//    /* reserve prefix (no NUL) + INT_TO_STR_BUFFER_SIZE for digits + space + NUL */
-//    static char speak_deadzone_buf[sizeof(speak_deadzone_prefix) - 1 + INT_TO_STR_BUFFER_SIZE];
-//    static char *speak_deadzone_digits;
-//    
-//    size_t prefix_len = sizeof(speak_deadzone_prefix) - 1;
-//    memcpy(speak_deadzone_buf, speak_deadzone_prefix, prefix_len);
-//    speak_deadzone_digits = speak_deadzone_buf + prefix_len;
-//    /* do not write NUL here; digits will overwrite following bytes */
-    
+        
     
 
     /* -------------------- Device capabilities -------------------- */
@@ -819,8 +904,8 @@ main(int argc, char **argv)
     DWORD        estimate_window_start_time   = GetTickCount();
     DWORD        last_estimate_print_time     = 0;
 
-    if (verbose_flag)
-        printf("Monitoring loop starting.\n");
+    //if (verbose_flag)
+    printf("Fanatec Pedals Monitor started.\n");
 
     /* -------------------- Main loop -------------------- */
 
@@ -955,9 +1040,7 @@ main(int argc, char **argv)
                  * reacting to transient noise.
                  */
                 if (repeatingClutchCount >= clutch_repeat_required) {
-                    if (verbose_flag)
-                        printf("Clutch Alert\n");
-                    system(clutch_command);
+                    system(clutch_command); // Clutch powershell prints the alert in addition to TTS
                     repeatingClutchCount = 0;
                 }
             }
@@ -1046,22 +1129,30 @@ main(int argc, char **argv)
                                  * the estimator to learn from borderline windows.
                                  */
                                 if (percentReached > (unsigned int)gas_min_usage_percent) {
-                                    char temp_num_buf[INT_TO_STR_BUFFER_SIZE];
 
-                                    /*
-                                     * Writes "NN " into temp buffer and then copies into
-                                     * gas_command_line at gas_arg_ptr.
-                                     */
-                                    strcpy(gas_arg_ptr,
-                                           lwan_uint32_to_str(
-                                               (uint32_t)percentReached,
-                                               temp_num_buf));
+                                    if (verbose_flag) {
+                                        /* static verbose buffer with reserved tail */
+                                        static char verbose_buf[] = "Gas Alert: ***"; /* asterisks reserve room for percentage */
+                                        char *last_valid_v = verbose_buf + sizeof(verbose_buf) - 1;
 
-                                    if (verbose_flag)
-                                        printf("Gas Alert: %u%%\n", percentReached);
+                                        /* use ':' as marker so we preserve the colon and fill spaces up to it */
+                                        (void)append_digits_from_right((uint32_t)percentReached, ':', last_valid_v, sizeof(verbose_buf));
 
+                                        puts(verbose_buf);
+                                    }                                    
+
+                                    /* single static with visible asterisks after the command */
+                                    static char gas_command_line[] = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -ExecutionPolicy Bypass -File .\\sayGas.ps1 ***"; /* asterisks reserve for percentage */
+
+                                    /* last_valid = end of buffer */
+                                    char *last_valid = gas_command_line + sizeof(gas_command_line) - 1;
+
+                                    /* write digits in-place, stopping at the space before the digits */
+                                    (void)append_digits_from_right((uint32_t)percentReached, ' ', last_valid, sizeof(gas_command_line));
+
+                                    /* execute the command */
                                     system(gas_command_line);
-                                    lastGasAlertTime = currentTime;
+
                                 }
                             }
                         }
@@ -1109,24 +1200,19 @@ main(int argc, char **argv)
                                      */
                                     if (best_estimate_percent < last_printed_estimate &&
                                         (currentTime - last_estimate_print_time) >= gas_cooldown_ms) {
+                                                                                
+                                        /* Notify the user via TTS */                                        
+                                        /* reserve enough room: at least 11 bytes for uint32 (10 digits + NUL) but we now best_estimate_percent <= 100 */
+                                        static char speak_buf[] = "New deadzone estimation:***";
+                                        char *last_valid = speak_buf + sizeof(speak_buf) - 1;
 
-                                        printf("[Estimate] Suggested --gas-deadzone-out: %u\n",
-                                               best_estimate_percent);
-                                        
-                                        /* Notify the user via TTS */
-//                                        lwan_uint32_to_str(best_estimate_percent, speak_deadzone_digits);
-//                                        Speak(speak_deadzone_buf);
-                                        {
-                                            /* Keep the prefix local to this block. static -> single instance in rodata, no per-iteration copy. */
-                                            static const char speak_deadzone_prefix[] = "New deadzone estimation: ";
-                                            /* conservative space for a 32-bit unsigned decimal + space + NUL (up to 10 digits + ' ' + '\0' = 12) */
-                                            enum { UINT32_PRINT_BUF = 12 };
-                                            /* stack buffer size derives from the prefix length automatically */
-                                            char tts_buf[sizeof(speak_deadzone_prefix) + UINT32_PRINT_BUF];
-                                            int rc = snprintf(tts_buf, sizeof(tts_buf), "%s%u ",
-                                                              speak_deadzone_prefix, best_estimate_percent);
-                                            Speak(tts_buf);                                            
-                                        }
+                                        /* append number in-place and fill gap with spaces up to ':' */
+                                        append_digits_from_right(best_estimate_percent, ':', last_valid, sizeof(speak_buf));
+
+                                        /* speak_buf now contains: "New deadzone estimation:87\0" (or digits placed at the right) */
+                                        Speak(speak_buf); // The powershell script here prints the message
+                                        // printf("[Estimate] Suggested --gas-deadzone-out: %u\n", best_estimate_percent);
+
 
                                         last_printed_estimate    = best_estimate_percent;
                                         last_estimate_print_time = currentTime;
@@ -1171,7 +1257,7 @@ main(int argc, char **argv)
         Sleep(sleep_Time);
     }
 
-    /* Cleanup (Windows will do this on process exit, but explicit is better). */
+    /* Windows will do this on process exit, but explicit is good form. */
     ReleaseMutex(hMutex);
     CloseHandle(hMutex);
 

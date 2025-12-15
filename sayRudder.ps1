@@ -1,6 +1,7 @@
 ﻿#Get-Location
-Write-Host "    Timestamp: " -NoNewline
-Get-Date -Format "MM/dd/yyyy HH:mm:ss"  
+$timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+Write-Host "[$timestamp] Rudder noise detected."
+
 Add-Type -AssemblyName System.speech
 $speak = New-Object System.Speech.Synthesis.SpeechSynthesizer
 $speak.SelectVoiceByHints([System.Speech.Synthesis.VoiceGender]::Female, [System.Speech.Synthesis.VoiceAge]::Adult)
