@@ -44,6 +44,7 @@
 
 #include <assert.h>
 
+
 /* Flag set by ‘--verbose’. */
 static int verbose_flag = 0;
 
@@ -298,13 +299,84 @@ normalize_pedal_axis(DWORD raw_value, DWORD axis_max)
     return raw_value;                   /* Already in 0..axis_max order.   */
 }
 
+/*
+ * SendSpeakPipeCommand
+ * 
+ * High-performance IPC with optional Timestamped Logging.
+ */
+static void
+SendSpeakPipeCommand(const char *text, size_t text_len, int should_log)
+{
+
+    static const char pipe_name[] = "\\\\.\\pipe\\ipc_pipe_vr_server_commands";
+    static const char prefix[]    = "SPEAK ";
+
+    char buffer[512];
+    size_t prefix_len = sizeof(prefix) - 1;
+
+    /* Safety check: +1 for the newline */
+    assert(prefix_len + text_len + 1 < sizeof(buffer)); /* text is not read from config files where it could be too long, debug, verify and go fast */
+
+    /* Copy prefix */
+    memcpy(buffer, prefix, prefix_len);
+    
+    /* Copy text */
+    memcpy(buffer + prefix_len, text, text_len);
+    
+    /* Append Newline (required by StreamReader.ReadLine on the server) */
+    buffer[prefix_len + text_len] = '\n'; 
+    
+    /* Log to console if requested */
+    if (should_log) {
+        SYSTEMTIME st;
+        GetLocalTime(&st); /* Fast Win32 API (no CRT overhead) */
+
+        /* 
+         * Format: [yyyy-MM-dd HH:mm:ss] Text
+         * "%.*s" prints exactly text_len characters.
+         */
+        printf("[%.4d-%.2d-%.2d %.2d:%.2d:%.2d] %.*s\n",
+               st.wYear, st.wMonth, st.wDay,
+               st.wHour, st.wMinute, st.wSecond,
+               (int)text_len, text);
+    }
+    /* --------------------------------------------------------- */
+    
+
+    /* Connect and send pipe command */
+    HANDLE hPipe = CreateFileA(
+        pipe_name,
+        GENERIC_WRITE,
+        0,              
+        NULL,           
+        OPEN_EXISTING,  
+        0,              
+        NULL
+    );
+
+    if (hPipe != INVALID_HANDLE_VALUE) {
+        DWORD written;
+        /* Write the total length: prefix + text + newline */
+        WriteFile(hPipe, buffer, (DWORD)(prefix_len + text_len + 1), &written, NULL);
+        CloseHandle(hPipe);
+    }
+}
+
+
+/* 
+ * Helper macro to call Speak() with the compile-time length.
+ * Works for string literals and static char arrays.
+ */
+#define SPEAK_MACRO(msg) Speak(msg, sizeof(msg) - 1)
+
 
 /* Fire-and-forget text-to-speech helper.
  * Using CreateProcessA (no snprintf, no shell). 
  * Caller passes a NUL-terminated text string (no extra quoting required).
+ * Always make sure exe + arg_prefix + text + 2 <= 512.
  */
 static void
-Speak(const char *text)
+Speak(const char *text, size_t text_len)
 {
     /* Executable path (constant). Using a static array so sizeof gives literal size if needed. */
     static const char exe[] =
@@ -312,25 +384,24 @@ Speak(const char *text)
 
     /* Argument prefix (notice no trailing closing-quote) */
     static const char arg_prefix[] =
-        "-ExecutionPolicy Bypass -File .\\saySomething.ps1 \"";
+        "dummy1stArg -ExecutionPolicy Bypass -File .\\saySomething.ps1 \""; /* convention dictates that argv[0] should be the name of the executable */
 
     /* Mutable buffer for CreateProcess lpCommandLine; must be writable. */
     char cmdline[512];
 
     size_t prefix_len = sizeof(arg_prefix) - 1; /* exclude NUL */
-    size_t text_len = strlen(text);
+    size_t effective_cmdline_len = prefix_len + text_len;
 
     /* Need space for prefix + text + closing quote + final NUL. */
-    if (prefix_len + text_len + 2 > sizeof(cmdline))
-        return; /* too long for buffer; drop the request */
+    assert(effective_cmdline_len + 2 < sizeof(cmdline)); // text is not read from config files where it could be too long, debug and verify 
 
     /* Copy prefix and text into writable buffer. Use memcpy to avoid formatted I/O. */
     memcpy(cmdline, arg_prefix, prefix_len);
     memcpy(cmdline + prefix_len, text, text_len);
 
     /* close the quoted argument and NUL-terminate */
-    cmdline[prefix_len + text_len] = '"';
-    cmdline[prefix_len + text_len + 1] = '\0';
+    cmdline[effective_cmdline_len++] = '"';
+    cmdline[effective_cmdline_len] = '\0';
 
     STARTUPINFOA si;
     PROCESS_INFORMATION pi;
@@ -344,20 +415,21 @@ Speak(const char *text)
             exe,            /* lpApplicationName */
             cmdline,        /* lpCommandLine (writable) */
             NULL, NULL,     /* process/security attrs */
-            FALSE,          /* inherit handles */
-            CREATE_NO_WINDOW, /* creation flags: no console window */
+            TRUE,          /* inherit handles */
+            0,              /* dwCreationFlags */
             NULL, NULL,     /* environment, current directory */
             &si,
             &pi)) {
         /* Close handles promptly; we don't need to wait. */
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
-    } else {
-        /* Optional: fallback to system() if CreateProcessA fails. */
-        char fallback[512];
-        snprintf(fallback, sizeof(fallback), "%s %s\"", exe, cmdline);
-        system(fallback); 
     }
+//    else {
+//        /* Optional: fallback to system() if CreateProcessA fails. */
+//        char fallback[512];
+//        snprintf(fallback, sizeof(fallback), "%s %s\"", exe, cmdline);
+//        system(fallback); 
+//    }
 }
 
 
@@ -723,7 +795,7 @@ main(int argc, char **argv)
     HANDLE hMutex = CreateMutexA(NULL, TRUE, "fanatec_monitor_single_instance_mutex");
     if (hMutex == NULL || GetLastError() == ERROR_ALREADY_EXISTS) {
         static char duplicate_instance[] = "Error.  Another instance of Fanatec Monitor is already running.";
-        Speak(duplicate_instance);
+        Speak(duplicate_instance, sizeof(duplicate_instance) - 1);
         perror(duplicate_instance);
         if (hMutex)
             CloseHandle(hMutex);
@@ -921,7 +993,7 @@ main(int argc, char **argv)
 
             if (target_vendor_id != 0 && target_product_id != 0) {
                 /* Only speak/attempt reconnect if VID/PID were provided. */
-                Speak("Controller disconnected. Waiting 60 seconds.");
+                SPEAK_MACRO("Controller disconnected. Waiting 60 seconds.");
                 if (verbose_flag)
                     printf("Entering Reconnection Mode...\n");
 
@@ -931,7 +1003,7 @@ main(int argc, char **argv)
                     int newID = FindJoystick(target_vendor_id, target_product_id);
                     if (newID != -1) {
                         joy_ID = (UINT)newID;
-                        Speak("Controller found. Resuming monitoring.");
+                        SPEAK_MACRO("Controller found. Resuming monitoring.");
                         if (verbose_flag)
                             printf("Reconnected at ID %u\n", joy_ID);
 
@@ -962,7 +1034,7 @@ main(int argc, char **argv)
 
                         break; /* Leave reconnect loop, resume main loop. */
                     } else {
-                        Speak("Controller not found. Retrying.");
+                        SPEAK_MACRO("Controller not found. Retrying.");
                         if (verbose_flag)
                             printf("Scan failed. Retrying in 60s...\n");
                     }
@@ -1210,7 +1282,7 @@ main(int argc, char **argv)
                                         append_digits_from_right(best_estimate_percent, ':', last_valid, sizeof(speak_buf));
 
                                         /* speak_buf now contains: "New deadzone estimation:87\0" (or digits placed at the right) */
-                                        Speak(speak_buf); // The powershell script here prints the message
+                                        Speak(speak_buf, sizeof(speak_buf) - 1); // The powershell script here prints the message
                                         // printf("[Estimate] Suggested --gas-deadzone-out: %u\n", best_estimate_percent);
 
 
