@@ -20,17 +20,17 @@
  *     If your controller already uses 0..axisMax with 0 = idle, use:
  *         --no-axis-normalization
  *   - Not intended to run for more than 24 hours (no need for overflow checks with GetTickCount)
- *
+ * 
  * With NetBeans IDE 18, I had to dd c:\windows\system32\winmm.dll in
  * Run->Set-Project-Configuration->Customize->Build->Linker->Libraries->Add-Library-File
  * according to the required by joyGetPosEx() en https://learn.microsoft.com/en-us/previous-versions/ms709354(v=vs.85)
- *
+ * 
  * Used samples from:
  * https://social.msdn.microsoft.com/forums/vstudio/en-US/af28b35b-d756-4d87-94c6-ced882ab20a5/reading-input-data-from-joystick-in-visual-basic
- * lwan_uint32_to_str: https://tia.mat.br/posts/2014/06/23/integer_to_string_conversion.html
- *
+ * lwan_uint32_to_str: https://tia.mat.br/posts/2014/06/23/integer_to_string_conversion.html 
+ * 
  * License: https://github.com/rolex20/FanatecClubSportPedalsMonitor/blob/main/LICENSE
- *
+ * 
  */
 
 #include <stdio.h>
@@ -53,8 +53,8 @@
  * Ideally, it should contain only POD types (ints, DWORDs) and no pointers.
  */
 typedef struct PedalMonState {
-    /*
-     * Configuration / feature flags (originally static ints).
+    /* 
+     * Configuration / feature flags (originally static ints). 
      */
     /* Flag set by ‘--verbose’. */
     int verbose_flag;
@@ -172,8 +172,8 @@ typedef struct PedalMonState {
     int tts_enabled;         /* 0 = disable TTS, non-zero = allow TTS (default = enabled) */
     int no_console_banner;   /* 0 = show banner (default), non-zero = suppress non-essential banners */
 
-    /*
-     * Command-line parameters (originally locals in main).
+    /* 
+     * Command-line parameters (originally locals in main). 
      */
     UINT  joy_ID;
     DWORD joy_Flags;
@@ -181,16 +181,16 @@ typedef struct PedalMonState {
     UINT  margin;
     UINT  sleep_Time;
 
-    /*
-     * Axis / clutch state (runtime).
+    /* 
+     * Axis / clutch state (runtime). 
      */
     DWORD axisMax;
     DWORD axisMargin;  /* Converted % margin to units. */
     DWORD lastClutchValue; /* Normalized clutch value (0..axisMax). */
     int   repeatingClutchCount;
 
-    /*
-     * Gas state machine (runtime).
+    /* 
+     * Gas state machine (runtime). 
      *
      * In normalized space:
      *   gasIdleMax: Maximum value considered "idle".
@@ -207,8 +207,8 @@ typedef struct PedalMonState {
     DWORD gas_window_ms;
     DWORD gas_cooldown_ms;
 
-    /*
-     * Gas deadzone-out estimator state.
+    /* 
+     * Gas deadzone-out estimator state. 
      *
      *   best_estimate_percent:
      *     Best (i.e., lowest) suggested --gas-deadzone-out value observed so far.
@@ -219,8 +219,8 @@ typedef struct PedalMonState {
     DWORD        estimate_window_start_time;
     DWORD        last_estimate_print_time;
 
-    /*
-     * Per-sample values and helper metrics.
+    /* 
+     * Per-sample values and helper metrics. 
      */
     DWORD        currentTime;
     DWORD        rawGas;
@@ -231,8 +231,8 @@ typedef struct PedalMonState {
     unsigned int percentReached;
     unsigned int currentPercent;
 
-    /*
-     * Loop counter.
+    /* 
+     * Loop counter. 
      */
     unsigned int iLoop;
 
@@ -352,27 +352,27 @@ append_digits_from_right(uint32_t value, char special_char, char *last_valid, si
     char *cursor = last_valid;
     *cursor-- = '\0'; /* place NUL at last_valid, then decrement cursor to last_valid-1 */
 
-    /*
+    /* 
      * Write digits Right to Left (RTL). Use do/while to handle value==0 in one pass.
-     *
-     * PERFORMANCE NOTE:
+     * 
+     * PERFORMANCE NOTE: 
      * The line below combines integer arithmetic, ASCII conversion, memory store,
      * and pointer decrement into a single concise construct.
      *
-     * Original approach:
+     * Original approach: 
      *     *cursor = "0123456789"[value % 10];
      *     cursor--;
      *
      * Why the new approach is faster:
-     * 1. No Memory Lookup: The original approach accesses a string literal array
-     *    stored in memory (L1 Data Cache). The new approach uses pure CPU register
+     * 1. No Memory Lookup: The original approach accesses a string literal array 
+     *    stored in memory (L1 Data Cache). The new approach uses pure CPU register 
      *    arithmetic ('0' + remainder), avoiding the load latency.
-     * 2. Instruction Pipelining: (value % 10) and the pointer decrement can often
+     * 2. Instruction Pipelining: (value % 10) and the pointer decrement can often 
      *    be executed in parallel by the CPU.
-     * 3. Compact Assembly: Compiles to a single "Store with Post-Decrement" instruction
+     * 3. Compact Assembly: Compiles to a single "Store with Post-Decrement" instruction 
      *    on supported architectures (like ARM or x86 with specific addressing modes).
      */
-   
+    
     do {
         *cursor-- = (char)('0' + (value % 10));
         value /= 10;
@@ -423,7 +423,7 @@ normalize_pedal_axis(int axis_normalization_enabled, DWORD raw_value, DWORD axis
 
 /*
  * SendSpeakPipeCommand
- *
+ * 
  * High-performance IPC with optional Timestamped Logging.
  */
 static void
@@ -441,19 +441,19 @@ SendSpeakPipeCommand(const char *text, size_t text_len, int should_log)
 
     /* Copy prefix */
     memcpy(buffer, prefix, prefix_len);
-   
+    
     /* Copy text */
     memcpy(buffer + prefix_len, text, text_len);
-   
+    
     /* Append Newline (required by StreamReader.ReadLine on the server) */
-    buffer[prefix_len + text_len] = '\n';
-   
+    buffer[prefix_len + text_len] = '\n'; 
+    
     /* Log to console if requested */
     if (should_log) {
         SYSTEMTIME st;
         GetLocalTime(&st); /* Fast Win32 API (no CRT overhead) */
 
-        /*
+        /* 
          * Format: [yyyy-MM-dd HH:mm:ss] Text
          * "%.*s" prints exactly text_len characters.
          */
@@ -463,16 +463,16 @@ SendSpeakPipeCommand(const char *text, size_t text_len, int should_log)
                (int)text_len, text);
     }
     /* --------------------------------------------------------- */
-   
+    
 
     /* Connect and send pipe command */
     HANDLE hPipe = CreateFileA(
         pipe_name,
         GENERIC_WRITE,
-        0,             
-        NULL,          
-        OPEN_EXISTING, 
-        0,             
+        0,              
+        NULL,           
+        OPEN_EXISTING,  
+        0,              
         NULL
     );
 
@@ -485,7 +485,7 @@ SendSpeakPipeCommand(const char *text, size_t text_len, int should_log)
 }
 
 
-/*
+/* 
  * Helper macro to call Speak() with the compile-time length.
  * Works for string literals and static char arrays.
  */
@@ -493,7 +493,7 @@ SendSpeakPipeCommand(const char *text, size_t text_len, int should_log)
 
 
 /* Fire-and-forget text-to-speech helper.
- * Using CreateProcessA (no snprintf, no shell).
+ * Using CreateProcessA (no snprintf, no shell). 
  * Caller passes a NUL-terminated text string (no extra quoting required).
  * Always make sure exe + arg_prefix + text + 2 <= 512.
  */
@@ -519,7 +519,7 @@ Speak(const char *text, size_t text_len, const PedalMonState *st)
     size_t effective_cmdline_len = prefix_len + text_len;
 
     /* Need space for prefix + text + closing quote + final NUL. */
-    assert(effective_cmdline_len + 2 < sizeof(cmdline)); // text is not read from config files where it could be too long, debug and verify
+    assert(effective_cmdline_len + 2 < sizeof(cmdline)); // text is not read from config files where it could be too long, debug and verify 
 
     /* Copy prefix and text into writable buffer. Use memcpy to avoid formatted I/O. */
     memcpy(cmdline, arg_prefix, prefix_len);
@@ -535,7 +535,7 @@ Speak(const char *text, size_t text_len, const PedalMonState *st)
     si.cb = sizeof(si);
     ZeroMemory(&pi, sizeof(pi));
 
-    /* CreateProcessA will modify cmdline; that's why we used a writable buffer.
+    /* CreateProcessA will modify cmdline; that's why we used a writable buffer. 
        We pass exe as lpApplicationName to avoid shell parsing and reduce ambiguity. */
     if (CreateProcessA(
             exe,            /* lpApplicationName */
@@ -554,7 +554,7 @@ Speak(const char *text, size_t text_len, const PedalMonState *st)
 //        /* Optional: fallback to system() if CreateProcessA fails. */
 //        char fallback[512];
 //        snprintf(fallback, sizeof(fallback), "%s %s\"", exe, cmdline);
-//        system(fallback);
+//        system(fallback); 
 //    }
 }
 
@@ -606,7 +606,7 @@ ParseCommandLine(int argc,
     HANDLE hProcess = GetCurrentProcess();
 
     while (1) {
-        /*
+        /* 
          * We define long_options locally so we can point .flag to st-> fields.
          */
         struct option long_options[] = {
@@ -948,8 +948,7 @@ Telemetry_Init(PedalMonState *st)
     );
 
     if (!g_hTelemetryMap) {
-        if (!st->no_console_banner || st->verbose_flag)
-            fprintf(stderr, "Telemetry Warning: Failed to create file mapping (%lu). Telemetry disabled.\n", GetLastError());
+        fprintf(stderr, "Telemetry Warning: Failed to create file mapping (%lu). Telemetry disabled.\n", GetLastError()); /* always print this type of error */
         st->telemetry_enabled = 0;
         return;
     }
@@ -964,8 +963,7 @@ Telemetry_Init(PedalMonState *st)
     );
 
     if (!g_shared_st) {
-        if (!st->no_console_banner || st->verbose_flag)
-            fprintf(stderr, "Telemetry Warning: Failed to map view (%lu). Telemetry disabled.\n", GetLastError());
+        fprintf(stderr, "Telemetry Warning: Failed to map view (%lu). Telemetry disabled.\n", GetLastError()); /* always print this type of error */
         CloseHandle(g_hTelemetryMap);
         g_hTelemetryMap = NULL;
         st->telemetry_enabled = 0;
@@ -982,8 +980,7 @@ Telemetry_Init(PedalMonState *st)
     );
 
     if (!g_hTelemetryEvent) {
-        if (!st->no_console_banner || st->verbose_flag)
-            fprintf(stderr, "Telemetry Warning: Failed to create event (%lu). Telemetry disabled.\n", GetLastError());
+        fprintf(stderr, "Telemetry Warning: Failed to create event (%lu). Telemetry disabled.\n", GetLastError()); /* always print this type of error */
         UnmapViewOfFile(g_shared_st);
         g_shared_st = NULL;
         CloseHandle(g_hTelemetryMap);
@@ -992,8 +989,7 @@ Telemetry_Init(PedalMonState *st)
         return;
     }
 
-    if (!st->no_console_banner || st->verbose_flag)
-        printf("Telemetry: Shared memory initialized [%s].\n", PEDMON_TELEMETRY_MAPPING_NAME);
+    printf("Telemetry: Shared memory initialized [%s].\n", PEDMON_TELEMETRY_MAPPING_NAME); /* always print this type of error */
 }
 
 /*
@@ -1007,10 +1003,10 @@ Telemetry_Publish(PedalMonState *st)
     if (st->telemetry_enabled && g_shared_st && g_hTelemetryEvent) {
         st->producer_notify_ms = GetTickCount();
         st->telemetry_sequence++;
-       
+        
         /* Copy entire state struct to shared memory */
         *g_shared_st = *st;
-       
+        
         /* Signal consumers */
         SetEvent(g_hTelemetryEvent);
     }
@@ -1046,9 +1042,9 @@ main(int argc, char **argv)
     HANDLE hMutex = CreateMutexA(NULL, TRUE, "fanatec_monitor_single_instance_mutex");
     if (hMutex == NULL || GetLastError() == ERROR_ALREADY_EXISTS) {
         static char duplicate_instance[] = "Error.  Another instance of Fanatec Monitor is already running.";
-        /* Speak wrapper (since PedalMonState is not ready yet, we can't check tts_enabled flag gracefully without parsing first,
+        /* Speak wrapper (since PedalMonState is not ready yet, we can't check tts_enabled flag gracefully without parsing first, 
            but for duplicate instance error, we force it or just use Speak helper with NULL state if we wanted to enforce.
-           However, standard behavior for this error is to alert. We will create a dummy state to pass check if needed,
+           However, standard behavior for this error is to alert. We will create a dummy state to pass check if needed, 
            or just call Speak directly since we haven't parsed args yet to know if user wanted --no-speech.
            We'll default to speaking it as this is an error condition. */
         Speak(duplicate_instance, sizeof(duplicate_instance) - 1, NULL /* NULL st means default allowed */);
@@ -1092,12 +1088,12 @@ main(int argc, char **argv)
 
         /* CLI defaults (legacy behavior). */
         /* joy_ID: "impossible" 17 to force explicit selection or VID/PID usage. */
-        .joy_ID                        = 17,
+        .joy_ID                        = 17, 
         .joy_Flags                     = JOY_RETURNALL,
         .iterations                    = 1,     /* 0 means infinite loop. */
         .margin                        = 5,     /* % for clutch stickiness. */
         .sleep_Time                    = 1000,
-       
+        
         /* Runtime state can be zero-initialized or set explicitly here. */
         .lastClutchValue               = 0,
         .repeatingClutchCount          = 0,
@@ -1152,8 +1148,8 @@ main(int argc, char **argv)
         "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe "
         "-ExecutionPolicy Bypass -File .\\sayRudder.ps1";
 
-       
-   
+        
+    
 
     /* -------------------- Device capabilities -------------------- */
 
@@ -1161,7 +1157,7 @@ main(int argc, char **argv)
     JOYCAPS jc; /* Kept as local variable per rules */
 
     mr = joyGetDevCaps(st.joy_ID, &jc, sizeof(jc));
-    if ((!st.no_console_banner || st.verbose_flag) && mr == JOYERR_NOERROR) {
+    if ( st.verbose_flag && mr == JOYERR_NOERROR) {
         printf("Monitoring ID=[%u] VID=[%hX] PID=[%hX]\n", st.joy_ID, jc.wMid, jc.wPid);
         printf("Axis Max: [%lu]\n", (unsigned long)st.axisMax);
         printf("Axis normalization: %s\n",
@@ -1231,108 +1227,108 @@ main(int argc, char **argv)
 
     /* -------------------- Main loop -------------------- */
 
-        while (st.iterations == 0 || ++st.iLoop <= st.iterations) {
-                       
-                /* Start of loop telemetry bookkeeping */
-                st.producer_loop_start_ms = GetTickCount();
+	while (st.iterations == 0 || ++st.iLoop <= st.iterations) {
+			
+		/* Start of loop telemetry bookkeeping */
+		st.producer_loop_start_ms = GetTickCount();
 
-                /*
-                 * Reset per-frame one-shot event flags.
-                 *
-                 * controller_disconnected is treated as a latched "current state":
-                 *   0 = controller currently believed to be connected
-                 *   1 = controller currently believed to be disconnected
-                 *
-                 * It is therefore NOT cleared here; only explicit disconnect /
-                 * reconnect transitions change it.
-                 */
-                st.gas_alert_triggered    = 0;
-                st.clutch_alert_triggered = 0;
-                st.controller_reconnected = 0;  /* one-shot event */
-                st.gas_estimate_decreased = 0;
-                st.gas_auto_adjust_applied = 0;
+		/*
+		 * Reset per-frame one-shot event flags.
+		 *
+		 * controller_disconnected is treated as a latched "current state":
+		 *   0 = controller currently believed to be connected
+		 *   1 = controller currently believed to be disconnected
+		 *
+		 * It is therefore NOT cleared here; only explicit disconnect /
+		 * reconnect transitions change it.
+		 */
+		st.gas_alert_triggered    = 0;
+		st.clutch_alert_triggered = 0;
+		st.controller_reconnected = 0;  /* one-shot event */
+		st.gas_estimate_decreased = 0;
+		st.gas_auto_adjust_applied = 0;
 
-                mr = joyGetPosEx(st.joy_ID, &info);
+		mr = joyGetPosEx(st.joy_ID, &info);
 
 
         /* ---------------- Error handling & reconnect ---------------- */
 
-                if (mr != JOYERR_NOERROR) {
-                        printf("Error reading joystick (Code %u)\n", mr); /* critical error, no longer requires verbose */
+		if (mr != JOYERR_NOERROR) {
+			printf("Error reading joystick (Code %u)\n", mr); /* critical error, no longer requires verbose */
 
-                        if (st.target_vendor_id != 0 && st.target_product_id != 0) {
-                                /* Only speak/attempt reconnect if VID/PID were provided. */
-                                SPEAK_MACRO("Controller disconnected. Waiting 60 seconds.");
+			if (st.target_vendor_id != 0 && st.target_product_id != 0) {
+				/* Only speak/attempt reconnect if VID/PID were provided. */
+				SPEAK_MACRO("Controller disconnected. Waiting 60 seconds.");
 
-                                /* Event + state: Controller is now disconnected. */
-                                st.controller_disconnected = 1;
-                                st.controller_reconnected  = 0;
-                                st.last_disconnect_time_ms = GetTickCount();
+				/* Event + state: Controller is now disconnected. */
+				st.controller_disconnected = 1;
+				st.controller_reconnected  = 0;
+				st.last_disconnect_time_ms = GetTickCount();
 
-                                /* Publish a telemetry frame so PedBridge / PedDash see the disconnect. */
-                                Telemetry_Publish(&st);
+				/* Publish a telemetry frame so PedBridge / PedDash see the disconnect. */
+				Telemetry_Publish(&st);
 
-                                if (st.verbose_flag)
-                                        printf("Entering Reconnection Mode...\n");
+				if (st.verbose_flag)
+					printf("Entering Reconnection Mode...\n");
 
-                                while (1) {
-                                        Sleep(60000); /* sleep 60 seconds to avoid busy-looping */
+				while (1) {
+					Sleep(60000); /* sleep 60 seconds to avoid busy-looping */
 
-                                        int newID = FindJoystick(st.target_vendor_id, st.target_product_id);
-                                        if (newID != -1) {
-                                                st.joy_ID = (UINT)newID;
-                                                SPEAK_MACRO("Controller found. Resuming monitoring.");
+					int newID = FindJoystick(st.target_vendor_id, st.target_product_id);
+					if (newID != -1) {
+						st.joy_ID = (UINT)newID;
+						SPEAK_MACRO("Controller found. Resuming monitoring.");
 
-                                                /* Event: Controller Reconnected */
-                                                st.controller_disconnected = 0;  /* back to "connected" state */
-                                                st.controller_reconnected  = 1;  /* one-shot event flag */
-                                                st.last_reconnect_time_ms  = GetTickCount();
+						/* Event: Controller Reconnected */
+						st.controller_disconnected = 0;  /* back to "connected" state */
+						st.controller_reconnected  = 1;  /* one-shot event flag */
+						st.last_reconnect_time_ms  = GetTickCount();
 
-                                                /* Publish a telemetry frame so the reconnect event is visible. */
-                                                Telemetry_Publish(&st);
+						/* Publish a telemetry frame so the reconnect event is visible. */
+						Telemetry_Publish(&st);
 
-                                                if (st.verbose_flag)
-                                                        printf("Reconnected at ID %u\n", st.joy_ID);
+						if (st.verbose_flag)
+							printf("Reconnected at ID %u\n", st.joy_ID);
 
-                                                /* Reinitialize JOYINFOEX for the newly found device. */
-                                                info.dwSize  = sizeof(info);
-                                                info.dwFlags = st.joy_Flags;
+						/* Reinitialize JOYINFOEX for the newly found device. */
+						info.dwSize  = sizeof(info);
+						info.dwFlags = st.joy_Flags;
 
-                                                /*
-                                                 * Recompute axisMax and gas thresholds in case flags
-                                                 * or effective resolution changed for the new device.
-                                                 */
-                                                st.axisMax    = (st.joy_Flags & JOY_RETURNRAWDATA) ? 1023 : 65535;
-                                                st.gasIdleMax = st.axisMax * st.gas_deadzone_in  / 100;
-                                                st.gasFullMin = st.axisMax * st.gas_deadzone_out / 100;
+						/*
+						 * Recompute axisMax and gas thresholds in case flags
+						 * or effective resolution changed for the new device.
+						 */
+						st.axisMax    = (st.joy_Flags & JOY_RETURNRAWDATA) ? 1023 : 65535;
+						st.gasIdleMax = st.axisMax * st.gas_deadzone_in  / 100;
+						st.gasFullMin = st.axisMax * st.gas_deadzone_out / 100;
 
-                                                /* Reset gas/clutch and estimator state so we don't immediately alert. */
-                                                st.lastFullThrottleTime         = GetTickCount();
-                                                st.lastGasActivityTime          = GetTickCount();
-                                                st.isRacing                     = FALSE;
-                                                st.peakGasInWindow              = 0;
-                                                st.lastClutchValue              = 0;
-                                                st.repeatingClutchCount         = 0;
-                                                st.best_estimate_percent        = 100U;
-                                                st.last_printed_estimate        = 100U;
-                                                st.estimate_window_peak_percent = 0U;
-                                                st.estimate_window_start_time   = GetTickCount();
-                                                st.last_estimate_print_time     = 0;
+						/* Reset gas/clutch and estimator state so we don't immediately alert. */
+						st.lastFullThrottleTime         = GetTickCount();
+						st.lastGasActivityTime          = GetTickCount();
+						st.isRacing                     = FALSE;
+						st.peakGasInWindow              = 0;
+						st.lastClutchValue              = 0;
+						st.repeatingClutchCount         = 0;
+						st.best_estimate_percent        = 100U;
+						st.last_printed_estimate        = 100U;
+						st.estimate_window_peak_percent = 0U;
+						st.estimate_window_start_time   = GetTickCount();
+						st.last_estimate_print_time     = 0;
 
-                                                break; /* Leave reconnect loop, resume main loop. */
-                                        } else {
-                                                SPEAK_MACRO("Controller not found. Retrying.");
-                                                if (st.verbose_flag)
-                                                        printf("Scan failed. Retrying in 60s...\n");
-                                        }
-                                }
+						break; /* Leave reconnect loop, resume main loop. */
+					} else {
+						SPEAK_MACRO("Controller not found. Retrying.");
+						if (st.verbose_flag)
+							printf("Scan failed. Retrying in 60s...\n");
+					}
+				}
 
-                                /* Skip the rest of this iteration; next iteration will read again. */
-                                continue;
-                        }
+				/* Skip the rest of this iteration; next iteration will read again. */
+				continue;
+			}
 
-                        /* If VID/PID not specified, we just skip processing this frame. */
-                }
+			/* If VID/PID not specified, we just skip processing this frame. */
+		}
 
 
         if (mr == JOYERR_NOERROR) {
@@ -1371,7 +1367,7 @@ main(int argc, char **argv)
                  *   if |delta| stays <= axisMargin for several consecutive samples,
                  *   we treat the clutch as stuck/noisy at that position.
                  */
-               
+                
                 /*
                  * Only consider clutch noise when:
                  *   - Gas is at/near idle (gasValue <= gasIdleMax),
@@ -1401,11 +1397,11 @@ main(int argc, char **argv)
                 if (st.repeatingClutchCount >= st.clutch_repeat_required) {
                     if (st.tts_enabled)
                         system(clutch_command); // Clutch powershell prints the alert in addition to TTS
-                   
+                    
                     /* Event: Clutch Alert */
                     st.clutch_alert_triggered    = 1;
                     st.last_clutch_alert_time_ms = st.currentTime;
-                   
+                    
                     st.repeatingClutchCount = 0;
                 }
             }
@@ -1504,7 +1500,7 @@ main(int argc, char **argv)
                                         (void)append_digits_from_right((uint32_t)st.percentReached, ':', last_valid_v, sizeof(verbose_buf));
 
                                         puts(verbose_buf);
-                                    }                                   
+                                    }                                    
 
                                     /* single static with visible asterisks after the command */
                                     static char gas_command_line[] = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -ExecutionPolicy Bypass -File .\\sayGas.ps1 ***"; /* asterisks reserve for percentage */
@@ -1572,8 +1568,8 @@ main(int argc, char **argv)
                                      */
                                     if (st.best_estimate_percent < st.last_printed_estimate &&
                                         (st.currentTime - st.last_estimate_print_time) >= st.gas_cooldown_ms) {
-                                                                               
-                                        /* Notify the user via TTS */                                       
+                                                                                
+                                        /* Notify the user via TTS */                                        
                                         /* reserve enough room: at least 11 bytes for uint32 (10 digits + NUL) but we now best_estimate_percent <= 100 */
                                         static char speak_buf[] = "New deadzone estimation:***";
                                         char *last_valid = speak_buf + sizeof(speak_buf) - 1;
@@ -1631,16 +1627,16 @@ main(int argc, char **argv)
                     }
                 }
             }
-           
-            /*
+            
+            /* 
              * Telemetry: Publish frame state to shared memory.
              * Done at the end of valid processing for this iteration.
              */
             Telemetry_Publish(&st);
-           
+            
         } /* if (mr == JOYERR_NOERROR) */
 
-        /*
+        /* 
          * Calculate loop duration for the *current* iteration.
          * This value will be available in the Telemetry state during the *next* publish.
          */
@@ -1657,4 +1653,3 @@ main(int argc, char **argv)
 
     return EXIT_SUCCESS;
 }
-
