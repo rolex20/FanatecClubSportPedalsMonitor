@@ -250,7 +250,7 @@ typedef struct PedalMonState {
      */
     int gas_alert_triggered;          /* 1 if a gas drift alert fired this iteration */
     int clutch_alert_triggered;       /* 1 if a clutch noise alert fired this iteration */
-    int controller_disconnected;      /* 1 if a disconnect event occurred this iteration */
+    int controller_disconnected;      /* 1 if a disconnect event occurred this iteration: latched state (1 while disconnected) */
     int controller_reconnected;       /* 1 if a reconnect event occurred this iteration */
     int gas_estimate_decreased;       /* 1 if a new (lower) deadzone estimate was spoken this iteration */
     int gas_auto_adjust_applied;      /* 1 if auto deadzone-out adjustment was applied this iteration */
@@ -1657,3 +1657,4 @@ main(int argc, char **argv)
 
     return EXIT_SUCCESS;
 }
+
