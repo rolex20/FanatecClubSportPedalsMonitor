@@ -42,6 +42,8 @@
 #include <getopt.h>
 #include <stdint.h>
 
+#include <sddl.h>  /* Required for ConvertStringSecurityDescriptorToSecurityDescriptor */
+
 #include <assert.h>
 
 /*
@@ -170,7 +172,8 @@ typedef struct PedalMonState {
      */
     int telemetry_enabled;   /* 0 = off (default), non-zero = shared-memory telemetry enabled */
     int tts_enabled;         /* 0 = disable TTS, non-zero = allow TTS (default = enabled) */
-    int no_console_banner;   /* 0 = show banner (default), non-zero = suppress non-essential banners */
+    int ipc_enabled;         /* 0 = use external process for TTS, non zero = TTS via IPC SPEAK command */
+    int no_console_banner;   /* 0 = show banner (default), non-zero = suppress non-essential banners. */
 
     /* 
      * Command-line parameters (originally locals in main). 
@@ -259,12 +262,17 @@ typedef struct PedalMonState {
      * Event Timestamps (Persistent)
      * Last time (in ms) these specific events occurred.
      */
-    DWORD last_gas_alert_time_ms;
-    DWORD last_clutch_alert_time_ms;
+    
     DWORD last_disconnect_time_ms;
     DWORD last_reconnect_time_ms;
+    
+    
+    /* Eliminated 
+    DWORD last_gas_alert_time_ms;
+    DWORD last_clutch_alert_time_ms;
     DWORD last_estimate_speech_time_ms;
     DWORD last_auto_adjust_time_ms;
+    */
 
 } PedalMonState;
 
@@ -328,12 +336,12 @@ lwan_uint32_to_str(uint32_t value, char buffer[static INT_TO_STR_BUFFER_SIZE])
  * append_digits_from_right(): optimized, assert-enabled RTL writer.
  *
  * Preconditions (caller must ensure):
- *  - last_valid == buf + total_buf_size - 1
+ *  - last_valid == buf + total_buf_size - 2
  *  - total_buf_size >= 11 (10 digits for uint32 + terminating NUL)
  *  - The buffer contains the prefix to the left of reserved tail area.
  *
  * Behavior:
- *  - Writes '\0' at *last_valid, writes digits right-to-left immediately before it,
+ *  - Writes digits right-to-left starting at *last_valid
  *    and backfills spaces (0x20) leftwards up to special_char or buffer start.
  *  - No trailing space is written after the digits.
  *  - Returns pointer to first digit written, or NULL on trivial sanity failure.
@@ -348,9 +356,7 @@ append_digits_from_right(uint32_t value, char special_char, char *last_valid, si
     /* Compute buffer start. Cast to ptrdiff_t to avoid unsigned arithmetic surprises. */
     char *buf_start = last_valid - (ptrdiff_t)(total_buf_size - 1);
 
-    /* Single cursor: write terminating NUL then move left to last digit slot. */
     char *cursor = last_valid;
-    *cursor-- = '\0'; /* place NUL at last_valid, then decrement cursor to last_valid-1 */
 
     /* 
      * Write digits Right to Left (RTL). Use do/while to handle value==0 in one pass.
@@ -421,15 +427,16 @@ normalize_pedal_axis(int axis_normalization_enabled, DWORD raw_value, DWORD axis
     return raw_value;                   /* Already in 0..axis_max order.   */
 }
 
+
+
 /*
- * SendSpeakPipeCommand
- * 
- * High-performance IPC with optional Timestamped Logging.
+ * Send Speak Windows Pipe Command via IPC
+ * Requires my TelemetryVibShaker/WebScripts/WaitFor-Json-Commands.ps1
+ * IPC with optional Timestamped Logging.
  */
 static void
-SendSpeakPipeCommand(const char *text, size_t text_len, int should_log)
-{
-
+SpeakIPC(const char *text, size_t text_len)
+{    
     static const char pipe_name[] = "\\\\.\\pipe\\ipc_pipe_vr_server_commands";
     static const char prefix[]    = "SPEAK ";
 
@@ -447,24 +454,7 @@ SendSpeakPipeCommand(const char *text, size_t text_len, int should_log)
     
     /* Append Newline (required by StreamReader.ReadLine on the server) */
     buffer[prefix_len + text_len] = '\n'; 
-    
-    /* Log to console if requested */
-    if (should_log) {
-        SYSTEMTIME st;
-        GetLocalTime(&st); /* Fast Win32 API (no CRT overhead) */
-
-        /* 
-         * Format: [yyyy-MM-dd HH:mm:ss] Text
-         * "%.*s" prints exactly text_len characters.
-         */
-        printf("[%.4d-%.2d-%.2d %.2d:%.2d:%.2d] %.*s\n",
-               st.wYear, st.wMonth, st.wDay,
-               st.wHour, st.wMinute, st.wSecond,
-               (int)text_len, text);
-    }
-    /* --------------------------------------------------------- */
-    
-
+        
     /* Connect and send pipe command */
     HANDLE hPipe = CreateFileA(
         pipe_name,
@@ -485,11 +475,6 @@ SendSpeakPipeCommand(const char *text, size_t text_len, int should_log)
 }
 
 
-/* 
- * Helper macro to call Speak() with the compile-time length.
- * Works for string literals and static char arrays.
- */
-#define SPEAK_MACRO(msg) Speak(msg, sizeof(msg) - 1, &st)
 
 
 /* Fire-and-forget text-to-speech helper.
@@ -498,12 +483,8 @@ SendSpeakPipeCommand(const char *text, size_t text_len, int should_log)
  * Always make sure exe + arg_prefix + text + 2 <= 512.
  */
 static void
-Speak(const char *text, size_t text_len, const PedalMonState *st)
+SpeakExternal(const char *text, size_t text_len)
 {
-    /* If TTS is disabled via flag, return immediately. */
-    if (st && st->tts_enabled == 0)
-        return;
-
     /* Executable path (constant). Using a static array so sizeof gives literal size if needed. */
     static const char exe[] =
         "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
@@ -550,12 +531,44 @@ Speak(const char *text, size_t text_len, const PedalMonState *st)
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
     }
-//    else {
-//        /* Optional: fallback to system() if CreateProcessA fails. */
-//        char fallback[512];
-//        snprintf(fallback, sizeof(fallback), "%s %s\"", exe, cmdline);
-//        system(fallback); 
-//    }
+}
+
+
+/* 
+ * Helper macro to call Report() with the compile-time length.
+ * Works for string literals and static char arrays.
+ */
+#define ALERT(msg) Alert(msg, sizeof(msg) - 1, &st, 1)
+
+/* 
+ * Reports important message with print
+ * If --tts is enabled then uses TTS to speak the message.
+ * Calls external process or IPC listener with SPEAK command
+ */
+static void
+Alert(const char *text, size_t text_len, const PedalMonState *st, int should_log)
+{
+    assert(st != NULL);
+    
+    /* Log to console if requested */
+    if (should_log) {
+        SYSTEMTIME st;
+        GetLocalTime(&st); /* Fast Win32 API (no CRT overhead) */
+
+        /* 
+         * Format: [yyyy-MM-dd HH:mm:ss] Text
+         * "%.*s" prints exactly text_len characters.
+         */
+        printf("[%.4d-%.2d-%.2d %.2d:%.2d:%.2d] %.*s\n",
+               st.wYear, st.wMonth, st.wDay,
+               st.wHour, st.wMinute, st.wSecond,
+               (int)text_len, text);
+    }
+    /* --------------------------------------------------------- */
+    
+    /* call the correct TTS if required*/
+    if (st->tts_enabled) 
+        st->ipc_enabled?(void)SpeakIPC(text, text_len): (void)SpeakExternal(text, text_len);                
 }
 
 
@@ -622,7 +635,8 @@ ParseCommandLine(int argc,
             /* Telemetry and Output Control */
             {"telemetry",                     no_argument,       &st->telemetry_enabled,          1},
             {"tts",                           no_argument,       &st->tts_enabled,                1},
-            {"no-speech",                     no_argument,       &st->tts_enabled,                0},
+            {"no-tts",                        no_argument,       &st->tts_enabled,                0},
+            {"ipc",                           no_argument,       &st->ipc_enabled,                1},                        
             {"no-console-banner",             no_argument,       &st->no_console_banner,          1},
 
             /* Generic options (use short codes) */
@@ -689,7 +703,8 @@ HELP:
             puts("   Telemetry & UI:");
             puts("       --telemetry:        Enable shared-memory telemetry for external tools (PedBridge / PedDash).");
             puts("       --tts:              Enable Text-to-Speech alerts (default).");
-            puts("       --no-speech:        Disable Text-to-Speech alerts.");
+            puts("       --no-tts:           Disable Text-to-Speech alerts, when telemetry is used instead.");
+            puts("       --ipc:              Enable dispatchig tts alerts via IPC SPEAK.");
             puts("       --no-console-banner: Suppress startup/status banners in console.\n");
 
             puts("   General:");
@@ -936,11 +951,94 @@ Telemetry_Init(PedalMonState *st)
 {
     if (!st->telemetry_enabled)
         return;
+    
+/* 
+     * Create a Security Descriptor that grants "Everyone" (World) full access.
+     * This is required if the C program runs as Admin/SYSTEM but the consumer
+     * (PowerShell) runs as a standard user.
+     */
+    SECURITY_ATTRIBUTES sa;
+    ZeroMemory(&sa, sizeof(sa));
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = FALSE; /* Don't inherit to child processes */
+    
+    /* SDDL String: DACL: "D:(A;;GA;;;WD)" = (Allow; Generic All; World/Everyone) */
+    
+    /* 
+    * REFERENCE ONLY SDDL: "D:(A;;GRGW;;;WD)"
+    * Allow (A) Generic Read + Generic Write (GRGW) to World (WD).
+    * This removes the "Owner" check and lets anyone who can see it, write to it.
+    */
+    
+    /* SDDL String: "D:(A;;0x100006;;;AU)S:(ML;;NW;;;LW)"
+     * 
+     * This string configures two security layers to ensure cross-process access
+     * regardless of whether the program runs as Admin (High Integrity) or 
+     * Standard User (Medium Integrity).
+     *
+     * 1. DACL "D:(A;;0x100006;;;AU)"
+     *    - Trustee: AU (Authenticated Users).
+     *    - Access Mask: 0x100006
+     *        0x100000 (SYNCHRONIZE)       -> Allows Waiting on the Event.
+     *        0x000004 (SECTION_MAP_READ)  -> Allows Reading Memory.
+     *        0x000002 (SECTION_MAP_WRITE) -> Allows Writing Memory.
+     *    
+     *    We grant Read/Write/Sync to any Authenticated User to ensure no 
+     *    permission bottlenecks between the C program and PowerShell.
+     *
+     * 2. SACL "S:(ML;;NW;;;LW)"
+     *    - ML: Mandatory Label (Integrity Level).
+     *    - LW: Low Integrity Level.
+     *    - NW: No-Write-Up (Standard policy).
+     *
+     *    CRITICAL FIX: By explicitly labeling this object as "Low Integrity", 
+     *    we prevent Windows Mandatory Integrity Control (MIC) from blocking access.
+     *    This allows a Standard User process (Medium Integrity) to open/modify 
+     *    this object even if it was originally created by an Administrator 
+     *    (High Integrity).
+     */
+    
+/* 
+     * SDDL String: "D:(A;;GA;;;WD)"
+     * 
+     * Reverted to granting "Generic All" (GA) to "Everyone" (WD) to handle
+     * the "Zombie Object" scenario.
+     *
+     * Scenario:
+     *   1. C program creates the memory/event.
+     *   2. PowerShell connects and holds an open handle.
+     *   3. C program is restarted (Ctrl+C then run again).
+     *   4. Because PowerShell holds the handle, the kernel object persists.
+     *   5. The new C instance attaches to this EXISTING object.
+     *
+     * Why the previous "0x100006" permission failed:
+     *   The C program calls MapViewOfFile with FILE_MAP_ALL_ACCESS.
+     *   The specific mask 0x100006 granted Read/Write but missed other required
+     *   rights (like READ_CONTROL or SECTION_QUERY). When the C program tried
+     *   to re-attach with "ALL_ACCESS", the OS blocked it with Error 5.
+     *
+     * Solution:
+     *   By using "GA" (Generic All), we ensure that if the object stays alive
+     *   in memory, the restarting C program has full permission to re-open
+     *   and map it with FILE_MAP_ALL_ACCESS without Access Denied errors.
+     */    
+             
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorA(            
+            "D:(A;;GA;;;WD)",  
+            SDDL_REVISION_1, 
+            &sa.lpSecurityDescriptor, 
+            NULL)) {
+        fprintf(stderr, "Critical Error: Failed to create security descriptor (%lu).\n", GetLastError()); /* always print this type of error */
+        sa.lpSecurityDescriptor = NULL;
+        exit(EXIT_FAILURE); 
+    }
+
+    /* --------------------------------------------------------- */    
 
     /* Create/Open File Mapping backed by the paging file */
     g_hTelemetryMap = CreateFileMappingA(
         INVALID_HANDLE_VALUE,
-        NULL,
+        &sa,
         PAGE_READWRITE,
         0,
         sizeof(PedalMonState),
@@ -948,9 +1046,8 @@ Telemetry_Init(PedalMonState *st)
     );
 
     if (!g_hTelemetryMap) {
-        fprintf(stderr, "Telemetry Warning: Failed to create file mapping (%lu). Telemetry disabled.\n", GetLastError()); /* always print this type of error */
-        st->telemetry_enabled = 0;
-        return;
+        fprintf(stderr, "Critical Error: Failed to create file mapping (%lu).\n", GetLastError()); /* always print this type of error */
+        exit(EXIT_FAILURE); /* this will cleanup sa */
     }
 
     /* Map the view */
@@ -963,33 +1060,37 @@ Telemetry_Init(PedalMonState *st)
     );
 
     if (!g_shared_st) {
-        fprintf(stderr, "Telemetry Warning: Failed to map view (%lu). Telemetry disabled.\n", GetLastError()); /* always print this type of error */
+        fprintf(stderr, "Critical Error: Failed to map view (%lu).\n", GetLastError()); /* always print this type of error */
         CloseHandle(g_hTelemetryMap);
         g_hTelemetryMap = NULL;
-        st->telemetry_enabled = 0;
-        return;
+        exit(EXIT_FAILURE); /* this will cleanup sa */
     }
 
     /* Create/Open the sync Event */
     /* Using auto-reset event (FALSE for manual reset) */
     g_hTelemetryEvent = CreateEventA(
-        NULL,
+        &sa,   /* <--- Custom Security Attributes */
         FALSE, /* Auto-reset */
         FALSE, /* Initial state unsignaled */
         PEDMON_TELEMETRY_EVENT_NAME
     );
 
     if (!g_hTelemetryEvent) {
-        fprintf(stderr, "Telemetry Warning: Failed to create event (%lu). Telemetry disabled.\n", GetLastError()); /* always print this type of error */
+        fprintf(stderr, "Critical Error: Failed to create event (%lu).\n", GetLastError()); /* always print this type of error */
         UnmapViewOfFile(g_shared_st);
         g_shared_st = NULL;
         CloseHandle(g_hTelemetryMap);
         g_hTelemetryMap = NULL;
         st->telemetry_enabled = 0;
-        return;
+        exit(EXIT_FAILURE); /* this will cleanup sa */
     }
+    
+    /* Cleanup Security Descriptor (no longer needed after creation) */
+    if (sa.lpSecurityDescriptor) {
+        LocalFree(sa.lpSecurityDescriptor);
+    }    
 
-    printf("Telemetry: Shared memory initialized [%s].\n", PEDMON_TELEMETRY_MAPPING_NAME); /* always print this type of error */
+    if (st->verbose_flag) printf("Telemetry: Synch-Event and Shared memory initialized [%s].\n", PEDMON_TELEMETRY_MAPPING_NAME); 
 }
 
 /*
@@ -1031,29 +1132,13 @@ Telemetry_Shutdown(PedalMonState *st)
         CloseHandle(g_hTelemetryMap);
         g_hTelemetryMap = NULL;
     }
-    (void)st; /* Unused in shutdown, but kept for symmetry */
+    // (void)st; /* Unused in shutdown, but kept for symmetry */
 }
 
 
 int
 main(int argc, char **argv)
 {
-    /* Single-instance guard: prevent accidentally launching multiple monitors. */
-    HANDLE hMutex = CreateMutexA(NULL, TRUE, "fanatec_monitor_single_instance_mutex");
-    if (hMutex == NULL || GetLastError() == ERROR_ALREADY_EXISTS) {
-        static char duplicate_instance[] = "Error.  Another instance of Fanatec Monitor is already running.";
-        /* Speak wrapper (since PedalMonState is not ready yet, we can't check tts_enabled flag gracefully without parsing first, 
-           but for duplicate instance error, we force it or just use Speak helper with NULL state if we wanted to enforce.
-           However, standard behavior for this error is to alert. We will create a dummy state to pass check if needed, 
-           or just call Speak directly since we haven't parsed args yet to know if user wanted --no-speech.
-           We'll default to speaking it as this is an error condition. */
-        Speak(duplicate_instance, sizeof(duplicate_instance) - 1, NULL /* NULL st means default allowed */);
-        perror(duplicate_instance);
-        if (hMutex)
-            CloseHandle(hMutex);
-        exit(EXIT_FAILURE);
-    }
-
     /*
      * Initialize PedalMonState with default values.
      */
@@ -1084,6 +1169,7 @@ main(int argc, char **argv)
         /* Telemetry and TTS defaults */
         .telemetry_enabled             = 0,
         .tts_enabled                   = 1, /* Default enabled */
+        .ipc_enabled                   = 0, /* Default disabled */
         .no_console_banner             = 0,
 
         /* CLI defaults (legacy behavior). */
@@ -1113,6 +1199,17 @@ main(int argc, char **argv)
     st.estimate_window_start_time = GetTickCount();
 
     ParseCommandLine(argc, argv, &st);
+
+    
+    /* Single-instance guard: prevent accidentally launching multiple monitors. */
+    HANDLE hMutex = CreateMutexA(NULL, TRUE, "fanatec_monitor_single_instance_mutex");
+    if (hMutex == NULL || GetLastError() == ERROR_ALREADY_EXISTS) {
+        ALERT("Error.  Another instance of Fanatec Monitor is already running.");
+        if (hMutex)
+            CloseHandle(hMutex);
+        exit(EXIT_FAILURE);
+    }
+
 
     /* Optional auto-detect by VID/PID (if provided). */
     if (st.target_vendor_id != 0 && st.target_product_id != 0) {
@@ -1227,7 +1324,10 @@ main(int argc, char **argv)
 
     /* -------------------- Main loop -------------------- */
 
+    
+        /* warning: iLoop will always be zero due to the short-circuit bellow when st.iterations == 0 */
 	while (st.iterations == 0 || ++st.iLoop <= st.iterations) {
+
 			
 		/* Start of loop telemetry bookkeeping */
 		st.producer_loop_start_ms = GetTickCount();
@@ -1258,7 +1358,7 @@ main(int argc, char **argv)
 
 			if (st.target_vendor_id != 0 && st.target_product_id != 0) {
 				/* Only speak/attempt reconnect if VID/PID were provided. */
-				SPEAK_MACRO("Controller disconnected. Waiting 60 seconds.");
+				ALERT("Controller disconnected. Waiting 60 seconds.");
 
 				/* Event + state: Controller is now disconnected. */
 				st.controller_disconnected = 1;
@@ -1277,7 +1377,7 @@ main(int argc, char **argv)
 					int newID = FindJoystick(st.target_vendor_id, st.target_product_id);
 					if (newID != -1) {
 						st.joy_ID = (UINT)newID;
-						SPEAK_MACRO("Controller found. Resuming monitoring.");
+						ALERT("Controller found. Resuming monitoring.");
 
 						/* Event: Controller Reconnected */
 						st.controller_disconnected = 0;  /* back to "connected" state */
@@ -1317,7 +1417,7 @@ main(int argc, char **argv)
 
 						break; /* Leave reconnect loop, resume main loop. */
 					} else {
-						SPEAK_MACRO("Controller not found. Retrying.");
+						ALERT("Controller not found. Retrying.");
 						if (st.verbose_flag)
 							printf("Scan failed. Retrying in 60s...\n");
 					}
@@ -1395,12 +1495,12 @@ main(int argc, char **argv)
                  * reacting to transient noise.
                  */
                 if (st.repeatingClutchCount >= st.clutch_repeat_required) {
-                    if (st.tts_enabled)
-                        system(clutch_command); // Clutch powershell prints the alert in addition to TTS
+                    /* Use ALERT macro: Handles logging, --tts check, and IPC/External selection */
+                    ALERT("Rudder"); 
                     
                     /* Event: Clutch Alert */
                     st.clutch_alert_triggered    = 1;
-                    st.last_clutch_alert_time_ms = st.currentTime;
+                    // st.last_clutch_alert_time_ms = st.currentTime;
                     
                     st.repeatingClutchCount = 0;
                 }
@@ -1491,33 +1591,31 @@ main(int argc, char **argv)
                                  */
                                 if (st.percentReached > (unsigned int)st.gas_min_usage_percent) {
 
-                                    if (st.verbose_flag) {
-                                        /* static verbose buffer with reserved tail */
-                                        static char verbose_buf[] = "Gas Alert: ***"; /* asterisks reserve room for percentage */
-                                        char *last_valid_v = verbose_buf + sizeof(verbose_buf) - 1;
+                                    /* 
+                                     * Construct simple text string for the Alert.
+                                     * We need a buffer for "Gas *** percent".
+                                     */
+                                    static char gas_msg[] = "Gas ******* percent."; /* leaving additional spaces to have min buffer size = 11, safe for ints */
+                                    
+                                    /* 
+                                     * Calculate pointer to the end of the "***" area.
+                                     * So the digits area ends at index 10 (0-based).
+                                     */
+                                    char *end_of_digits = gas_msg + 10;
 
-                                        /* use ':' as marker so we preserve the colon and fill spaces up to it */
-                                        (void)append_digits_from_right((uint32_t)st.percentReached, ':', last_valid_v, sizeof(verbose_buf));
+                                    /* Write the percentage into the string */
+                                    append_digits_from_right(st.percentReached, ' ', end_of_digits, 11);
 
-                                        puts(verbose_buf);
-                                    }                                    
-
-                                    /* single static with visible asterisks after the command */
-                                    static char gas_command_line[] = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -ExecutionPolicy Bypass -File .\\sayGas.ps1 ***"; /* asterisks reserve for percentage */
-
-                                    /* last_valid = end of buffer */
-                                    char *last_valid = gas_command_line + sizeof(gas_command_line) - 1;
-
-                                    /* write digits in-place, stopping at the space before the digits */
-                                    (void)append_digits_from_right((uint32_t)st.percentReached, ' ', last_valid, sizeof(gas_command_line));
-
-                                    /* execute the command */
-                                    if (st.tts_enabled)
-                                        system(gas_command_line);
+                                    /* 
+                                     * Trigger Alert. 
+                                     * This will Log to console (should_log=1) AND Speak (via IPC or External).
+                                     * We removed the manual 'puts' to avoid double-logging.
+                                     */
+                                    ALERT(gas_msg); /* gas is being suspiciously low */
 
                                     /* Event: Gas Alert Triggered */
                                     st.gas_alert_triggered    = 1;
-                                    st.last_gas_alert_time_ms = st.currentTime;
+                                    // st.last_gas_alert_time_ms = st.currentTime;
 
                                     /* BUG FIX: Update the timestamp so the cooldown actually works */
                                     st.lastGasAlertTime = st.currentTime;
@@ -1571,19 +1669,18 @@ main(int argc, char **argv)
                                                                                 
                                         /* Notify the user via TTS */                                        
                                         /* reserve enough room: at least 11 bytes for uint32 (10 digits + NUL) but we now best_estimate_percent <= 100 */
-                                        static char speak_buf[] = "New deadzone estimation:***";
-                                        char *last_valid = speak_buf + sizeof(speak_buf) - 1;
+                                        static char speak_buf[] = "New deadzone estimation:*** percent."; /* buffer always larger than 11 */
+                                        char *last_valid = speak_buf + 26; /* now we are pointing at the last '*' */
 
                                         /* append number in-place and fill gap with spaces up to ':' */
                                         append_digits_from_right(st.best_estimate_percent, ':', last_valid, sizeof(speak_buf));
 
                                         /* speak_buf now contains: "New deadzone estimation:87\0" (or digits placed at the right) */
-                                        Speak(speak_buf, sizeof(speak_buf) - 1, &st); // The powershell script here prints the message
-                                        // printf("[Estimate] Suggested --gas-deadzone-out: %u\n", best_estimate_percent);
+                                        ALERT(speak_buf);
 
                                         /* Event: Estimate Decreased */
                                         st.gas_estimate_decreased       = 1;
-                                        st.last_estimate_speech_time_ms = st.currentTime;
+                                        // st.last_estimate_speech_time_ms = st.currentTime;
 
                                         st.last_printed_estimate    = st.best_estimate_percent;
                                         st.last_estimate_print_time = st.currentTime;
@@ -1615,7 +1712,7 @@ main(int argc, char **argv)
 
                                         /* Event: Auto Adjust Applied */
                                         st.gas_auto_adjust_applied  = 1;
-                                        st.last_auto_adjust_time_ms = st.currentTime;
+                                        // st.last_auto_adjust_time_ms = st.currentTime;
                                     }
                                 }
                             }

@@ -2,8 +2,9 @@ param (
     [string]$text = "Alert[]"
 )
 
-$timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-Write-Host "[$timestamp] [$text]"
+$text = $text.Trim()
+#$timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+#Write-Output "[$timestamp] [$text]"
 
 Add-Type -AssemblyName System.speech
 $speak = New-Object System.Speech.Synthesis.SpeechSynthesizer
