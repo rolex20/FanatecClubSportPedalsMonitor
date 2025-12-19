@@ -175,6 +175,24 @@ typedef struct PedalMonState {
     int ipc_enabled;         /* 0 = use external process for TTS, non zero = TTS via IPC SPEAK command */
     int no_console_banner;   /* 0 = show banner (default), non-zero = suppress non-essential banners. */
 
+    /*
+     * Per-pedal 0..100% indicators for the UI.
+     *
+     * Physical percentages:
+     *   - Computed directly from normalized axis values (0..axisMax).
+     *   - 100 == pedal fully physically depressed.
+     *
+     * Logical (in-game) percentages:
+     *   - Apply gas_deadzone_in / gas_deadzone_out thresholds to both gas and clutch.
+     *   - 0   == within idle band (below gasIdleMax).
+     *   - 100 == within full band (above gasFullMin).
+     */
+    unsigned int gas_physical_pct;
+    unsigned int clutch_physical_pct;
+
+    unsigned int gas_logical_pct;
+    unsigned int clutch_logical_pct;
+
     /* 
      * Command-line parameters (originally locals in main). 
      */
@@ -288,6 +306,32 @@ static PedalMonState *g_shared_st      = NULL;
 #ifndef JOY_RETURNRAWDATA
 #define JOY_RETURNRAWDATA 256
 #endif
+
+/* 
+ * ComputeLogicalPct:
+ * Maps a value into a 0..100 range based on idle/full thresholds.
+ */
+static unsigned int
+ComputeLogicalPct(DWORD value, DWORD idleMax, DWORD fullMin)
+{
+    if (value <= idleMax)
+        return 0;
+
+    if (value >= fullMin)
+        return 100;
+
+    if (fullMin <= idleMax) {
+        /*
+         * Defensive guard: if thresholds are misconfigured such that
+         * fullMin <= idleMax, treat everything as idle to avoid
+         * division by zero or negative ranges.
+         */
+        return 0;
+    }
+
+    /* Standard linear interpolation between thresholds */
+    return (unsigned int)(100u * (value - idleMax) / (fullMin - idleMax));
+}
 
 /*
  * We use a dedicated buffer size for integer-to-string conversion.
@@ -1163,6 +1207,11 @@ main(int argc, char **argv)
         .auto_gas_deadzone_enabled     = 0,
         .auto_gas_deadzone_minimum     = 0,
 
+        .gas_physical_pct              = 0,
+        .clutch_physical_pct           = 0,
+        .gas_logical_pct               = 0,
+        .clutch_logical_pct            = 0,	
+
         .target_vendor_id              = 0,
         .target_product_id             = 0,
 
@@ -1441,6 +1490,23 @@ main(int argc, char **argv)
             st.gasValue    = normalize_pedal_axis(st.axis_normalization_enabled, st.rawGas, st.axisMax);
             st.clutchValue = normalize_pedal_axis(st.axis_normalization_enabled, st.rawClutch, st.axisMax);
 
+            /* 
+             * UI Percentage Computation
+             * These four fields provide standardized 0-100 values for the dashboard.
+             */
+            if (st.axisMax > 0) {
+                /* Physical: Pure geometric travel */
+                st.gas_physical_pct = (unsigned int)((100u * st.gasValue) / st.axisMax);
+                st.clutch_physical_pct = (unsigned int)((100u * st.clutchValue) / st.axisMax);
+            } else {
+                st.gas_physical_pct = 0;
+                st.clutch_physical_pct = 0;
+            }
+
+            /* Logical: In-game activity using gas deadzone thresholds for both pedals */
+            st.gas_logical_pct = ComputeLogicalPct(st.gasValue, st.gasIdleMax, st.gasFullMin);
+            st.clutch_logical_pct = ComputeLogicalPct(st.clutchValue, st.gasIdleMax, st.gasFullMin);
+			
             if (st.verbose_flag) {
                 if (st.debug_raw_mode) {
                     printf("%lu, gas_raw=%lu gas_norm=%lu, clutch_raw=%lu clutch_norm=%lu\n",
@@ -1749,4 +1815,5 @@ main(int argc, char **argv)
     CloseHandle(hMutex);
 
     return EXIT_SUCCESS;
+
 }
