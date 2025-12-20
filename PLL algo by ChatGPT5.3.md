@@ -1,152 +1,212 @@
-# Response by Chat GPT 5.2 (Heavy Thinking Model)
+# Response from ChatGPT to your question.  I also added a comment asking it what if in the future I execute PedDash from another PC in my LAN.
+You’re 100% right to throw RTT away on localhost. If the “RTT” signal is basically **(event loop jitter + timer quantization)**, feeding it into the loop is like measuring temperature with a random-number generator.
 
-Below is a **stable “digital PLL / PI controller”** approach that fixes the exact oscillation you described by **never sprinting** and by **scheduling against an absolute clock** (so fetch/JS overhead doesn’t silently slow your loop).
+### Important constraint (so expectations are correct)
 
-Key ideas:
+Using **only queue depth** as the phase detector:
 
-* Treat `LastFramesReceived` as a **quantized phase detector**:
+* `0` tells you “you’re **before** the write”
+* `2+` tells you “you’re **after** multiple writes”
+* `1` tells you “you’re **somewhere inside** the safe window”
 
-  * `0` ⇒ you polled **too early** → delay more next time
-  * `2+` ⇒ you polled **too late** → delay less next time
-* Apply **small, bounded corrections** (PI controller + low-pass filtering) so you *converge* instead of oscillate.
-* Compute sleep from an **absolute next target time**, not `setTimeout(P)` after each fetch (which drifts).
+That means queue depth alone cannot *directly* tell you “you are 5ms after the write” — it can only tell you “you are not too early / not too late.”
+To actually land ~5ms after the write, you need a tiny **edge-seeking acquisition** step: *creep earlier until you barely hit a 0 once*, then back off by 5ms and hold. That’s still RTT-agnostic and uses queue depth only.
 
 ---
 
-## JavaScript logic (drop-in pattern)
+## RTT-agnostic “Edge-Seeking Digital PLL” (Absolute Timing)
+
+* **ACQUIRE mode:** slowly walk earlier until you *just* get a `0` once → that reveals the boundary.
+* Then shift later by `phaseAfterWriteMs` (≈5ms) and switch to **HOLD**.
+* **HOLD mode:** no creeping; just a damped PI correction when `0` or `2+` appears (drift or stalls).
+
+### `calculateNextSleep(framesReceived, producerPeriod)`
 
 ```js
-function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
+const calculateNextSleep = (() => {
+  // ---- Tunables (start here) ----
+  const cfg = {
+    phaseAfterWriteMs: 5,     // target margin after producer write
+    creepMs: 0.25,            // ACQUIRE: how fast we walk earlier (ms per poll)
+    alpha: 0.25,              // error low-pass (0..1)
+    kp: 6.0,                  // ms per frame-error (proportional)
+    ki: 0.6,                  // ms per frame-error per tick (integral)
+    intLimit: 8,              // anti-windup (in "frames")
+    maxAdjust: 25,            // clamp per-tick correction (ms): prevents sprinting
+    minStepRatio: 0.60,       // min interval = P*ratio
+    maxStepRatio: 1.40,       // max interval = P*ratio
+    holdReacquireErrors: 2,   // consecutive bad reads before re-ACQUIRE
+    slackMs: 2                // keep nextTarget at least this far in the future
+  };
 
-const ctrl = {
-  P: 100,                 // ProducerPeriod (ms) - you can set from input
-  targetFrames: 1,
+  // ---- State ----
+  let nextTarget = NaN;       // absolute schedule time (performance.now domain)
+  let errLP = 0;
+  let errInt = 0;
+  let mode = "ACQUIRE";
+  let holdBadCount = 0;
 
-  // Low-pass filter + integral state (units: "frames")
-  errLP: 0,
-  errInt: 0,
+  const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
 
-  // Tuning knobs (good starting points for P=100ms)
-  alpha: 0.25,            // error low-pass (0..1). Higher = faster, more jittery
-  kp: 6.0,                // ms per frame-error (proportional)
-  ki: 0.6,                // ms per frame-error per tick (integral)
+  return function calculateNextSleep(framesReceived, producerPeriod) {
+    const now = performance.now();
+    if (!Number.isFinite(nextTarget)) nextTarget = now;
 
-  // Anti-windup / stability bounds
-  intLimit: 10,           // limits integral magnitude (in "frames")
-  maxAdjust: 25,          // clamp per-tick correction (ms). Prevents "sprint" overshoot
+    // Validate/sanitize period
+    let P = Number.isFinite(producerPeriod) && producerPeriod > 0 ? producerPeriod : 100;
 
-  // Interval bounds (prevents absurdly fast/slow polling)
-  minStep: 60,            // ms (>= ~P*0.6)
-  maxStep: 140,           // ms (<= ~P*1.4)
+    // Phase detector using queue depth only:
+    //   0 => too early (+)
+    //   1 => in window (0)
+    //   2 => too late (-1), 3 => (-2), ...
+    let e;
+    if (framesReceived <= 0) e = +1;
+    else if (framesReceived === 1) e = 0;
+    else e = -(framesReceived - 1);
 
-  // Optional: estimate half-RTT so request-arrival is closer to target
-  rttEma: 0,
-  rttAlpha: 0.10,
+    // Low-pass filter quantized detector output
+    errLP += cfg.alpha * (e - errLP);
 
-  // Absolute schedule (ms in performance.now() timebase)
-  nextTarget: performance.now() + 100
-};
+    // Integrate (anti-windup)
+    errInt = clamp(errInt + errLP, -cfg.intLimit, cfg.intLimit);
 
-/**
- * Call this once per response to compute the NEXT setTimeout duration.
- * Inputs:
- *  - lastFramesReceived: integer (0,1,2,...)
- *  - producerPeriod: ms (e.g., 100)
- *  - requestRttMs: measured fetch round-trip time (ms)
- * Output:
- *  - nextSleepMs: ms to pass to setTimeout
- */
-function computeNextSleepTime(lastFramesReceived, producerPeriod, requestRttMs) {
-  const now = performance.now();
-  ctrl.P = producerPeriod;
+    // PI correction in ms
+    let adjust = cfg.kp * errLP + cfg.ki * errInt;
 
-  // Track RTT (optional but helps when local stack latency varies)
-  if (Number.isFinite(requestRttMs)) {
-    ctrl.rttEma += ctrl.rttAlpha * (requestRttMs - ctrl.rttEma);
-  }
+    // Mode logic
+    let resetAfterThisTick = false;
 
-  // Phase detector error: + => too early, - => too late
-  // (We want 1 frame)
-  let err = ctrl.targetFrames - lastFramesReceived;
+    if (mode === "ACQUIRE") {
+      // Walk earlier slowly while we keep seeing exactly 1 frame.
+      if (framesReceived === 1) adjust -= cfg.creepMs;
 
-  // Optional robustness bias: treat "0 frames" as more severe than "2 frames"
-  // because empties are usually more disruptive than slight extra latency.
-  if (lastFramesReceived === 0) err *= 1.35;
+      // When we finally see 0, we *just* crossed the boundary:
+      // push later by desired margin and lock.
+      if (framesReceived <= 0) {
+        adjust += cfg.phaseAfterWriteMs;
+        mode = "HOLD";
+        holdBadCount = 0;
+        resetAfterThisTick = true; // clear integrator memory after the lock event
+      }
+    } else { // HOLD
+      if (framesReceived === 1) {
+        holdBadCount = 0;
+        // No creep in HOLD: keep the phase you found.
+      } else {
+        holdBadCount++;
+        if (holdBadCount >= cfg.holdReacquireErrors) {
+          mode = "ACQUIRE";
+          holdBadCount = 0;
+          errInt *= 0.5; // soften the handoff
+        }
+      }
+    }
 
-  // Low-pass filter the quantized error to reduce jitter-driven flips
-  ctrl.errLP += ctrl.alpha * (err - ctrl.errLP);
+    // Clamp correction so we never "sprint"
+    adjust = clamp(adjust, -cfg.maxAdjust, +cfg.maxAdjust);
 
-  // Integrate (anti-windup clamp)
-  ctrl.errInt = clamp(ctrl.errInt + ctrl.errLP, -ctrl.intLimit, ctrl.intLimit);
+    // Compute step and advance absolute schedule
+    const minStep = P * cfg.minStepRatio;
+    const maxStep = P * cfg.maxStepRatio;
+    const step = clamp(P + adjust, minStep, maxStep);
 
-  // PI correction (ms)
-  let adjust = ctrl.kp * ctrl.errLP + ctrl.ki * ctrl.errInt;
-  adjust = clamp(adjust, -ctrl.maxAdjust, ctrl.maxAdjust);
+    nextTarget += step;
 
-  // Planned step to next poll time
-  const step = clamp(ctrl.P + adjust, ctrl.minStep, ctrl.maxStep);
+    // If we're behind, SKIP forward by whole steps (do NOT snap to 'now', which causes 0-frame overshoot)
+    if (nextTarget < now + cfg.slackMs) {
+      const deficit = (now + cfg.slackMs) - nextTarget;
+      const n = Math.ceil(deficit / step);
+      nextTarget += n * step;
+      errInt *= 0.5; // damp after a skip
+    }
 
-  // Advance absolute schedule
-  ctrl.nextTarget += step;
+    if (resetAfterThisTick) {
+      errLP = 0;
+      errInt = 0;
+    }
 
-  // If we fell behind (tab hiccup / long fetch), resync gently (no burst-drain)
-  const minLead = 2; // ms: keep nextTarget slightly in the future
-  if (ctrl.nextTarget < now + minLead) {
-    ctrl.nextTarget = now + minLead;
-    ctrl.errInt *= 0.5; // damp integrator after a resync event
-  }
-
-  // Convert absolute target into a setTimeout duration.
-  // Subtract half RTT so *arrival* is closer to target (optional).
-  const leadComp = 0.5 * ctrl.rttEma;
-  const sleepMs = Math.max(0, ctrl.nextTarget - now - leadComp);
-
-  return sleepMs;
-}
+    return Math.max(0, nextTarget - now);
+  };
+})();
 ```
 
-### How to use it in your poll loop
+### How you use it
+
+Call it **once per completed fetch** to get the sleep until the next fetch:
 
 ```js
-async function pollForever() {
-  let sleepMs = 0;
+let sleepMs = 0;
 
+async function loop() {
   while (true) {
     await new Promise(r => setTimeout(r, sleepMs));
 
-    const t0 = performance.now();
-    const resp = await fetch("http://localhost:1234/frames", { cache: "no-store" });
-    const data = await resp.json();
-    const t1 = performance.now();
+    const resp = await fetch("/frames", { cache: "no-store" });
+    const frames = await resp.json();
+    const framesReceived = Array.isArray(frames) ? frames.length : (frames.frames?.length ?? 0);
 
-    const framesReceived = Array.isArray(data) ? data.length : (data.frames?.length ?? 0);
-    const rtt = t1 - t0;
+    // Use producerPeriod from Producer timestamps (e.g. 102.4)
+    sleepMs = calculateNextSleep(framesReceived, producerPeriodMs);
 
-    sleepMs = computeNextSleepTime(framesReceived, 100, rtt);
-
-    // render(data) ...
+    // render(frames) ...
   }
 }
 ```
 
 ---
 
-## Why this won’t do the 10ms <-> 100ms oscillation
+## Why this fixes the 10ms <-> 100ms oscillation
 
-* You **never switch to a tiny fixed delay**. Corrections are **bounded** (`maxAdjust`) and **filtered** (`alpha`).
-* Scheduling is **absolute-time-based** (`nextTarget += step`) so you don’t accumulate drift from fetch/JS time.
-* The integrator gives it “memory” so it can correct a consistent offset without hunting, but anti-windup + resync prevents runaway.
+* It **never** collapses to “drain instantly” behavior.
+* Corrections are **bounded** (`maxAdjust`) and **filtered** (`alpha`), so it can’t amplify jitter into a stable flip-flop.
+* When behind, it **skips ahead by whole steps** instead of snapping to `now` (snapping is what causes the “poll immediately → 0 frames” overshoot pattern).
 
 ---
 
-## Tuning (fast and safe)
+## If you later move to LAN: easy ways to add RTT back safely
 
-For `P = 100ms`, start with what’s in the code. If you want:
+### Option A: Keep this queue-depth PLL, add a *filtered* RTT “lead” term
 
-* **More stability / less twitchy:** lower `alpha` (0.15–0.25), lower `kp`
-* **Faster convergence:** increase `kp` a bit (try 7–10), keep `maxAdjust` capped (20–30ms)
-* **Fewer empty responses:** keep the `0-frame` bias (`*1.35`) or raise slightly (1.4–1.6)
+When RTT becomes real, you can subtract a lead term so the **request arrival** aligns closer to `nextTarget`. But don’t use raw RTT samples.
 
-This controller will settle into a phase where `LastFramesReceived` is overwhelmingly **1** and will correct slowly when it drifts—without draining the queue instantly and then starving.
+Minimal, robust approach:
 
-If you can add **a monotonically increasing frame sequence number** in each frame payload, I can give you an even tighter “true PLL” variant that locks phase using sequence deltas (it becomes almost perfect).
+* Measure RTT per fetch.
+* Maintain a window of last N RTTs (e.g., 20).
+* Use **median** (or “min-of-window + small margin”) as the stable estimate.
+* Only update the lead estimate with “good” samples (reject outliers).
+
+Then do:
+
+* `sleep = (nextTarget - now) - 0.5 * rttEstimate`
+
+This is basically your original idea, but using an RTT estimate that isn’t garbage.
+
+### Option B (best): Add one timestamp field on the Bridge and do NTP-style offset
+
+If you can modify the JSON response, add:
+
+* `bridgeSendEpochMs` (Date.now() on the bridge at send time)
+  Optionally also:
+* `producerWriteEpochMs` (best if producer can stamp real epoch time at write)
+
+Then the browser can:
+
+* Estimate **clock offset** and **one-way delay** with NTP-style math (using multiple samples + choose the best/min-RTT sample).
+* Schedule against the **producer/bridge timebase**, not guesswork.
+
+That turns the problem from “PLL with only a 3-level detector” into “real phase lock to the producer write timestamp,” and it gets dramatically easier and tighter.
+
+### Option C: Stop polling (SSE/WebSocket)
+
+If the bridge can push frames, you sidestep timer jitter + polling phase entirely. You can still enforce “process exactly 1 frame per render tick” in the UI, but transport becomes stable.
+
+---
+
+If you want, paste one or two short logs like:
+
+* `framesReceived sequence over ~200 polls`
+* the producer’s measured period (e.g., 102.4ms)
+* whether you ever see `0` once locked
+
+…and I’ll suggest concrete values for `creepMs`, `maxAdjust`, and the HOLD reacquire threshold for your jitter profile.
