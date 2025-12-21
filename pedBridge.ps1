@@ -11,23 +11,22 @@
     4. TTS Worker: Uses a BlockingCollection producer-consumer pattern to eliminate busy waiting.
 #>
 
-# Region: TTS Templates
-$TtsTemplates = @{
-    GasAlert        = "Gas {0} percent."
-    ClutchAlert     = "Rudder."
-    NewEstimation   = "New deadzone estimation {0} percent."
-    AutoAdjusted    = "Auto adjusted deadzone to {0} percent."
-    Connected       = "Controller connected."
-    Disconnected    = "Controller disconnected."
-}
-
+# Load Speech Assembly Globally
+Add-Type -AssemblyName System.speech
 
 # Region: Interop Definitions
+# Check if the type already exists.
+# friendly tip: If you change the C# code below, you MUST restart PowerShell. Add-Type cannot "update" a class once loaded.
+if (-not ([System.Management.Automation.PSTypeName]'PedMon.Interop').Type) {
 $Definition = @"
 using System;
 using System.Runtime.InteropServices;
+using System.Collections.Concurrent;
+using System.Net; 
 
 namespace PedMon {
+    
+    // CRITICAL: This struct matches the C program exactly.
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi, Pack = 4)]
     public struct PedalMonState {
         // --- Configuration / Flags ---
@@ -117,234 +116,311 @@ namespace PedMon {
         public uint last_reconnect_time_ms;
     }
 
-    public class Win32 {
+    /* 
+       Global Shared State
+       This bridges the gap between the Main Loop and HTTP Thread safely.
+    */
+    public static class Shared {
+        public static ConcurrentQueue<object> TelemetryQueue = new ConcurrentQueue<object>();
+        public static int BatchId = 0;
+
+        // We store the HttpListener here so the background thread can find it!
+        public static HttpListener GlobalListener;
+
+        // Performance Metrics (Thread-safe doubles)
+        public static double LastHttpTimeMs;
+        public static double LastLoopTimeMs;
+        public static double LastTtsTimeMs;
+        
+        // Debug flag to check if HTTP thread is alive
+        public static bool HttpThreadRunning = false;
+        public static string HttpThreadError = "";
+    }
+
+    /*
+       Interop Helper
+       This class handles the "dirty work" of Windows API calls.
+       It prevents PowerShell from having to cast Int32 to UIntPtr, which causes crashes.
+    */
+    public static class Interop {
+        private const uint FILE_MAP_READ = 0x0004;
+        private const uint SYNCHRONIZE = 0x00100000;
+        private const uint INFINITE = 0xFFFFFFFF;
+
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
-        public static extern IntPtr OpenFileMapping(uint dwDesiredAccess, bool bInheritHandle, string lpName);
+        private static extern IntPtr OpenFileMapping(uint dwDesiredAccess, bool bInheritHandle, string lpName);
+
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
-        public static extern IntPtr MapViewOfFile(IntPtr hFileMappingObject, uint dwDesiredAccess, uint dwFileOffsetHigh, uint dwFileOffsetLow, UIntPtr dwNumberOfBytesToMap);
+        private static extern IntPtr MapViewOfFile(IntPtr hFileMappingObject, uint dwDesiredAccess, uint dwFileOffsetHigh, uint dwFileOffsetLow, UIntPtr dwNumberOfBytesToMap);
+
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
-        public static extern IntPtr OpenEvent(uint dwDesiredAccess, bool bInheritHandle, string lpName);
+        private static extern IntPtr OpenEvent(uint dwDesiredAccess, bool bInheritHandle, string lpName);
+
         [DllImport("kernel32.dll", SetLastError = true)]
-        public static extern uint WaitForSingleObject(IntPtr hHandle, uint dwMilliseconds);
+        private static extern uint WaitForSingleObject(IntPtr hHandle, uint dwMilliseconds);
+
         [DllImport("kernel32.dll", SetLastError = true)]
         public static extern bool CloseHandle(IntPtr hObject);
+
         [DllImport("kernel32.dll", SetLastError = true)]
         public static extern bool UnmapViewOfFile(IntPtr lpBaseAddress);
+
+        // -- Safe Wrappers for PowerShell --
+
+        public static IntPtr OpenSharedMemory(string name) {
+            return OpenFileMapping(FILE_MAP_READ, false, name);
+        }
+
+        public static IntPtr MapMemory(IntPtr hMap) {
+            // We calculate the size here in C#, so PowerShell doesn't fail converting Int to UIntPtr
+            UIntPtr size = new UIntPtr((uint)Marshal.SizeOf(typeof(PedalMonState)));
+            return MapViewOfFile(hMap, FILE_MAP_READ, 0, 0, size);
+        }
+
+        public static IntPtr OpenSyncEvent(string name) {
+            return OpenEvent(SYNCHRONIZE, false, name);
+        }
+
+        public static bool WaitForSignalInfinite(IntPtr hEvent) {
+            // We handle the 0xFFFFFFFF constant here in C#
+            return WaitForSingleObject(hEvent, INFINITE) == 0;
+        }
     }
 }
 "@
-Add-Type -TypeDefinition $Definition -Language CSharp
+    Add-Type -TypeDefinition $Definition -Language CSharp
+} else {
+    Write-Warning "Using existing C# definition. If you modified the C# code, please restart PowerShell."
+}
 
+# Region: Reset Shared State (Fix for Restart Issue)
+# We must clear static variables because they persist in memory after Ctrl+C.
+[PedMon.Shared]::HttpThreadError = ""
+[PedMon.Shared]::HttpThreadRunning = $false
+[PedMon.Shared]::BatchId = 0
+# Drain the queue
+$junk = $null
+while ([PedMon.Shared]::TelemetryQueue.TryDequeue([ref]$junk)) {}
 
-# Region: Shared Collections & Worker Threads
-# BlockingCollection provides event-driven wake-up (no busy waiting)
-$telemetryQueue = [System.Collections.Concurrent.ConcurrentQueue[PSObject]]::new()
-$ttsQueue = [System.Collections.Concurrent.BlockingCollection[string]]::new()
-$batchId = 0
-
-# Start background TTS Worker
-$ttsThread = [System.Threading.Thread]::new({
-    Add-Type -AssemblyName System.speech
-    $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
-    $synth.SelectVoiceByHints([System.Speech.Synthesis.VoiceGender]::Female, [System.Speech.Synthesis.VoiceAge]::Adult)
-    $synth.Rate = 0
-    
-    try {
-        while ($true) {
-            # Take() blocks the thread indefinitely (0% CPU) until an item is available
-            $msg = $using:ttsQueue.Take()
-            $synth.Speak($msg)
-        }
-    } catch {
-        # Handle thread termination
-    }
-})
-$ttsThread.IsBackground = $true
-$ttsThread.Start()
+# Region: TTS Templates
+$TtsTemplates = @{
+    GasAlert        = "Gas {0} percent."
+    ClutchAlert     = "Rudder."
+    NewEstimation   = "New deadzone estimation {0} percent."
+    AutoAdjusted    = "Auto adjusted deadzone to {0} percent."
+    Connected       = "Controller connected."
+    Disconnected    = "Controller disconnected."
+}
 
 # Region: HTTP JSON Server
 $listener = New-Object System.Net.HttpListener
 $listener.Prefixes.Add("http://localhost:8181/")
 $listener.Start()
 
-$httpTask = [System.Threading.Tasks.Task]::Run({
-	$sw = [System.Diagnostics.Stopwatch]::StartNew()
+# Teleport the listener to the shared C# class so the background PS instance can see it
+[PedMon.Shared]::GlobalListener = $listener
 
-    while ($listener.IsListening) {
-        try {
-            $context = $listener.GetContext()
-			
-			$sw.Restart()
-            $request = $context.Request
-            $response = $context.Response
+# In PS 5.1, we must use [PowerShell]::Create() to run code in a background thread reliably.
+$httpPs = [PowerShell]::Create()
+$httpPs.AddScript({
+    [PedMon.Shared]::HttpThreadRunning = $true
+    $sharedListener = [PedMon.Shared]::GlobalListener
+    $sw = [System.Diagnostics.Stopwatch]::New()
 
-            # CORS and Cache Headers
-            $response.AddHeader("Access-Control-Allow-Origin", "*")
-            $response.AddHeader("Access-Control-Allow-Methods", "GET, OPTIONS")
-            $response.AddHeader("Access-Control-Allow-Headers", "*")
-            $response.AddHeader("Cache-Control", "no-store")
+    try {
+        while ($sharedListener.IsListening) {
+            try {
+                # GetContext blocks until a request arrives
+                $context = $sharedListener.GetContext()
+                
+                $sw.Restart()
+                $request = $context.Request
+                $response = $context.Response
 
-            if ($request.HttpMethod -eq "OPTIONS") {
-                $response.StatusCode = 200
-                $response.Close()
-                continue
-            }
+                $response.AddHeader("Access-Control-Allow-Origin", "*")
+                $response.AddHeader("Access-Control-Allow-Methods", "GET, OPTIONS")
+                $response.AddHeader("Access-Control-Allow-Headers", "*")
+                $response.AddHeader("Cache-Control", "no-store")
 
-            # Drain pending frames from queue
-            $frameList = [System.Collections.Generic.List[PSObject]]::new()
-            $f = $null
-            while ($using:telemetryQueue.TryDequeue([ref]$f)) { $frameList.Add($f) }
-
-            $output = @{
-                schemaVersion = 1
-                bridgeInfo = @{
-                    batchId = [System.Threading.Interlocked]::Increment([ref]$using:batchId)
-                    servedAtUnixMs = [DateTimeOffset]::Now.ToUnixTimeMilliseconds()
-                    pendingFrameCount = $frameList.Count
+                if ($request.HttpMethod -eq "OPTIONS") {
+                    $response.StatusCode = 200
+                    $response.Close()
+                    continue
                 }
-                frames = $frameList
-            }
 
-            $json = $output | ConvertTo-Json -Depth 5 -Compress
-            $buffer = [System.Text.Encoding]::UTF8.GetBytes($json)
-            $response.ContentType = "application/json; charset=utf-8"
-            $response.ContentLength64 = $buffer.Length
-            $response.OutputStream.Write($buffer, 0, $buffer.Length)
-            $response.Close()
-			
-			$sw.Stop()
-			# Report elapsed time in milliseconds, comment after you are happy with the performance
-			Write-Output ("[HTTP] Response Elapsed total ms (double): {0}" -f $sw.Elapsed.TotalMilliseconds)
-			
-        } catch {
-            # Ignore listener errors during shutdown
+                # Drain pending frames
+                $frameList = [System.Collections.Generic.List[PSObject]]::new()
+                $f = $null
+                while ([PedMon.Shared]::TelemetryQueue.TryDequeue([ref]$f)) { $frameList.Add($f) }
+
+                $output = @{
+                    schemaVersion = 1
+                    bridgeInfo = @{
+                        batchId = [System.Threading.Interlocked]::Increment([ref][PedMon.Shared]::BatchId)
+                        servedAtUnixMs = [DateTimeOffset]::Now.ToUnixTimeMilliseconds()
+                        pendingFrameCount = $frameList.Count
+                    }
+                    frames = $frameList
+                }
+
+                $json = $output | ConvertTo-Json  -Compress
+                $buffer = [System.Text.Encoding]::UTF8.GetBytes($json)
+                $response.ContentType = "application/json; charset=utf-8"
+                $response.ContentLength64 = $buffer.Length
+                $response.OutputStream.Write($buffer, 0, $buffer.Length)
+                $response.Close()
+                
+                $sw.Stop()
+                [PedMon.Shared]::LastHttpTimeMs = $sw.Elapsed.TotalMilliseconds
+                
+            } catch {
+                # Log error to shared state so main loop can see it
+                [PedMon.Shared]::HttpThreadError = $_.Exception.Message
+            }
         }
+    } catch {
+        [PedMon.Shared]::HttpThreadRunning = $false
+        [PedMon.Shared]::HttpThreadError = "CRITICAL: " + $_.Exception.Message
     }
-})
+}) | Out-Null
+
+# Start the background PowerShell instance asynchronously
+$httpHandle = $httpPs.BeginInvoke()
 
 # Region: Main Telemetry Loop
 try {
     Write-Host "PedBridge v1.9c - Initializing..." -ForegroundColor Cyan
     
-    $SYNCHRONIZE = 0x00100000
-    $FILE_MAP_READ = 0x0004
-    
-    $hMap = [PedMon.Win32]::OpenFileMapping($FILE_MAP_READ, $false, "PedMonTelemetry")
+    # --- Safe Interop Calls (No more casting errors) ---
+    $hMap = [PedMon.Interop]::OpenSharedMemory("PedMonTelemetry")
     if ($hMap -eq [IntPtr]::Zero) { throw "Mapping not found. Ensure PedMon is running with --telemetry." }
 
-    $pMem = [PedMon.Win32]::MapViewOfFile($hMap, $FILE_MAP_READ, 0, 0, [UIntPtr][System.Runtime.InteropServices.Marshal]::SizeOf([type][PedMon.PedalMonState]))
-    $hEvent = [PedMon.Win32]::OpenEvent($SYNCHRONIZE, $false, "PedMonTelemetryEvent")
+    $pMem = [PedMon.Interop]::MapMemory($hMap)
+    if ($pMem -eq [IntPtr]::Zero) { throw "Failed to map memory view." }
+
+    $hEvent = [PedMon.Interop]::OpenSyncEvent("PedMonTelemetryEvent")
     if ($hEvent -eq [IntPtr]::Zero) { throw "Telemetry sync event not found." }
+
+    # Setup TTS Engine (Main Thread)
+    $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
+    $synth.SelectVoiceByHints([System.Speech.Synthesis.VoiceGender]::Female, [System.Speech.Synthesis.VoiceAge]::Adult)
+    $synth.Rate = 0
+    $ttsWatch = [System.Diagnostics.Stopwatch]::New()
 
     Write-Host "Connected to Shared Memory. Serving on http://localhost:8181/" -ForegroundColor Green
 
     $wasDisconnected = 0
-
 	$sw = [System.Diagnostics.Stopwatch]::StartNew()
+
     while ($true) {
-		$sw.Restart()
-		
-        # Infinite wait (non-polling) for producer update
-        if ([PedMon.Win32]::WaitForSingleObject($hEvent, [uint32]0xFFFFFFFF) -eq 0) {
-            
-            # --- Double-Read Anti-Torn-Read Pattern ---
-            # We take two snapshots. If the sequence number is identical, the data is consistent.
-            # If it changed during the read, the second snapshot is guaranteed to be newer/valid.
-            $first = [System.Runtime.InteropServices.Marshal]::PtrToStructure($pMem, [type][PedMon.PedalMonState])
-            $second = [System.Runtime.InteropServices.Marshal]::PtrToStructure($pMem, [type][PedMon.PedalMonState])
-            
-            $data = if ($first.telemetry_sequence -eq $second.telemetry_sequence) { $first } else { $second }
-            $receivedAt = [DateTimeOffset]::Now.ToUnixTimeMilliseconds()
+        try {            
+            # Infinite wait (non-polling) for producer update
+            # Using the C# helper to handle the Infinite wait logic safely
+            if ([PedMon.Interop]::WaitForSignalInfinite($hEvent)) {
+				$sw.Restart()				
+                
+                # --- Double-Read Anti-Torn-Read Pattern ---
+                $first = [System.Runtime.InteropServices.Marshal]::PtrToStructure($pMem, [type][PedMon.PedalMonState])
+                $second = [System.Runtime.InteropServices.Marshal]::PtrToStructure($pMem, [type][PedMon.PedalMonState])
+                
+                $data = if ($first.telemetry_sequence -eq $second.telemetry_sequence) { $first } else { $second }
+                $receivedAt = [DateTimeOffset]::Now.ToUnixTimeMilliseconds()
 
-            # --- Construct JSON-ready Frame ---
-            $frame = [PSCustomObject]@{
-                seq = $data.telemetry_sequence
-                pedMonTimeMs = $data.currentTime
-                controller = @{
-                    connected = ($data.controller_disconnected -eq 0)
-                    disconnectedFlag = $data.controller_disconnected
-                    reconnectedFlag = $data.controller_reconnected
-                    vendorId = $data.target_vendor_id
-                    productId = $data.target_product_id
-                    joyId = $data.joy_ID
+                # --- Construct JSON-ready Frame ---
+                # Wrap the struct in a PSObject so we can append members. 
+                # This ensures absolutely ALL variables from the C struct are sent.
+                $frame = [PSObject]$data
+
+                # Append our metadata that isn't in the C# struct
+                $frame | Add-Member -MemberType NoteProperty -Name "receivedAtUnixMs" -Value $receivedAt
+                
+                # Append the 3 requested Telemetry Metrics
+                # FIX: We wrap the static members in parens (...) to force evaluation to Double.
+                $frame | Add-Member -MemberType NoteProperty -Name "metricHttpProcessMs" -Value ([PedMon.Shared]::LastHttpTimeMs)
+                $frame | Add-Member -MemberType NoteProperty -Name "metricTtsSpeakMs"    -Value ([PedMon.Shared]::LastTtsTimeMs)
+                $frame | Add-Member -MemberType NoteProperty -Name "metricLoopProcessMs" -Value ([PedMon.Shared]::LastLoopTimeMs)
+
+                # Push to shared queue
+                [PedMon.Shared]::TelemetryQueue.Enqueue($frame)
+
+                # --- TTS Logic (Main Thread / Async) ---
+                if ($data.tts_enabled -eq 0) {
+                    $msgToSpeak = $null
+
+                    if ($data.gas_alert_triggered -ne 0) {
+                        $msgToSpeak = ($TtsTemplates.GasAlert -f $data.percentReached)
+                    }
+                    elseif ($data.clutch_alert_triggered -ne 0) {
+                        $msgToSpeak = $TtsTemplates.ClutchAlert
+                    }
+                    elseif ($data.gas_estimate_decreased -ne 0) {
+                        $msgToSpeak = ($TtsTemplates.NewEstimation -f $data.best_estimate_percent)
+                    }
+                    elseif ($data.gas_auto_adjust_applied -ne 0) {
+                        $msgToSpeak = ($TtsTemplates.AutoAdjusted -f $data.gas_deadzone_out)
+                    }
+                    elseif ($data.controller_reconnected -ne 0) {
+                        $msgToSpeak = $TtsTemplates.Connected
+                    }
+                    elseif ($data.controller_disconnected -ne 0 -and $wasDisconnected -eq 0) {
+                        $msgToSpeak = $TtsTemplates.Disconnected
+                    }
+
+                    if ($null -ne $msgToSpeak) {
+                        $ttsWatch.Restart()
+                        $synth.SpeakAsync($msgToSpeak) | Out-Null
+                        $ttsWatch.Stop()
+                        [PedMon.Shared]::LastTtsTimeMs = $ttsWatch.Elapsed.TotalMilliseconds
+                    }
                 }
-                telemetry = @{
-                    producerLoopStartMs = $data.producer_loop_start_ms
-                    producerNotifyMs    = $data.producer_notify_ms
-                    fullLoopTimeMs      = $data.fullLoopTime_ms
-                }
-                pedals = @{
-                    # New Precomputed Indicators
-                    gasPhysicalPct    = $data.gas_physical_pct
-                    clutchPhysicalPct = $data.clutch_physical_pct
-                    gasLogicalPct     = $data.gas_logical_pct
-                    clutchLogicalPct  = $data.clutch_logical_pct
-                    # Raw/Normalized Values
-                    rawGas      = $data.rawGas
-                    rawClutch   = $data.rawClutch
-                    gasValue    = $data.gasValue
-                    clutchValue = $data.clutchValue
-                }
-                events = @{
-                    gasAlert      = $data.gas_alert_triggered
-                    clutchAlert   = $data.clutch_alert_triggered
-                    reconnected   = $data.controller_reconnected
-                    estimateDown  = $data.gas_estimate_decreased
-                    autoAdjusted  = $data.gas_auto_adjust_applied
-                }
-                bridge = @{ receivedAtUnixMs = $receivedAt }
+                $wasDisconnected = $data.controller_disconnected
             }
 
-            $telemetryQueue.Enqueue($frame)
-
-            # --- TTS Logic (Only if PedMon is silent) ---
-            if ($data.tts_enabled -eq 0) {
-                if ($data.gas_alert_triggered -ne 0) {
-                    $ttsQueue.Add(($TtsTemplates.GasAlert -f $data.percentReached))
-                }
-                if ($data.clutch_alert_triggered -ne 0) {
-                    $ttsQueue.Add($TtsTemplates.ClutchAlert)
-                }
-                if ($data.gas_estimate_decreased -ne 0) {
-                    $ttsQueue.Add(($TtsTemplates.NewEstimation -f $data.best_estimate_percent))
-                }
-                if ($data.gas_auto_adjust_applied -ne 0) {
-                    $ttsQueue.Add(($TtsTemplates.AutoAdjusted -f $data.gas_deadzone_out))
-                }
-                if ($data.controller_reconnected -ne 0) {
-                    $ttsQueue.Add($TtsTemplates.Connected)
-                }
-                if ($data.controller_disconnected -ne 0 -and $wasDisconnected -eq 0) {
-                    $ttsQueue.Add($TtsTemplates.Disconnected)
-                }
+            # Optional: Check if background thread crashed
+            if ([PedMon.Shared]::HttpThreadError -ne "") {
+                Write-Host ("HTTP Error: " + [PedMon.Shared]::HttpThreadError) -ForegroundColor Red
+                [PedMon.Shared]::HttpThreadError = "" # Clear error
             }
-            $wasDisconnected = $data.controller_disconnected
+            
+            $sw.Stop()
+            # Report elapsed time in milliseconds
+            [PedMon.Shared]::LastLoopTimeMs = $sw.Elapsed.TotalMilliseconds
+            
+        } catch {
+            Write-Host "[LOOP ERROR] $($_.Exception.Message)" -ForegroundColor Red
+            Start-Sleep -Milliseconds 1000
         }
-		$sw.Stop()
-		# Report elapsed time in milliseconds, comment after you are happy with the performance
-		Write-Output ("[Telemetry] Loop Elapsed total ms (double): {0}" -f $sw.Elapsed.TotalMilliseconds)
-
     }
 }
 finally {
     Write-Host "`nShutting down PedBridge..." -ForegroundColor Yellow
     if ($listener) { $listener.Stop() }
-    if ($pMem)   { [PedMon.Win32]::UnmapViewOfFile($pMem) | Out-Null }
-    if ($hMap)   { [PedMon.Win32]::CloseHandle($hMap) | Out-Null }
-    if ($hEvent) { [PedMon.Win32]::CloseHandle($hEvent) | Out-Null }
+    
+    # Clean up the background PowerShell instance
+    if ($httpPs) { 
+        $httpPs.Stop() 
+        $httpPs.Dispose()
+    }
+
+    # Cleanup unmanaged resources via C# helper
+    if ($pMem)   { [PedMon.Interop]::UnmapViewOfFile($pMem) | Out-Null }
+    if ($hMap)   { [PedMon.Interop]::CloseHandle($hMap) | Out-Null }
+    if ($hEvent) { [PedMon.Interop]::CloseHandle($hEvent) | Out-Null }
 	
-    $ttsQueue.CompleteAdding()
+    if ($synth)  { $synth.Dispose() }
 	
 	$listener = $null
 	$pMem = $null
 	$hMap = $null 
 	$hEvent = $null
-	$ttsQueue = $null
+    $synth = $null
+    $httpPs = $null
 
     # Force Garbage Collection (The "Nuclear" Cleanup)
     # This forces .NET to reclaim the memory NOW, rather than waiting.
     [System.GC]::Collect()
     [System.GC]::WaitForPendingFinalizers()
 	
-    Write-Host "`nDisconnected and Memory Freed." -ForegroundColor Gray			
+    Write-Host "`nDisconnected and Memory Freed." -ForegroundColor Gray
+    
 }
