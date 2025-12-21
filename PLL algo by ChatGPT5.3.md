@@ -1,1177 +1,465 @@
-```html 
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>PedDash Arcade - Production v19 (Fixed)</title>
-  <style>
-    :root {
-      --bg-color: #050508;
-      --panel-bg: #0f0f16;
-      --text-main: #e0e0e0;
-      --text-muted: #777;
-      --neon-cyan: #00f3ff;
-      --neon-green: #39ff14;
-      --neon-magenta: #ff00ff;
-      --neon-amber: #ffbf00;
-      --neon-red: #ff3333;
-      --header-height: 70px;
-      --tab-height: 45px;
-    }
-
-    * { box-sizing: border-box; }
-
-    body {
-      margin: 0; padding: 0;
-      background-color: var(--bg-color);
-      color: var(--text-main);
-      font-family: "Segoe UI", Tahoma, sans-serif;
-      overflow: hidden;
-      width: 100vw; height: 100vh;
-      display: flex; flex-direction: column;
-      user-select: none;
-    }
-
-    /* Utility text colors (restored) */
-    .txt-white { color: #fff; }
-    .txt-green { color: var(--neon-green); }
-    .txt-red { color: var(--neon-red); }
-    .txt-cyan { color: var(--neon-cyan); }
-    .txt-mag { color: var(--neon-magenta); }
-    .txt-amb { color: var(--neon-amber); }
-
-    /* --- Header --- */
-    header {
-      height: var(--header-height);
-      background: linear-gradient(to bottom, #1a1a24, #0f0f16);
-      border-bottom: 1px solid #333;
-      display: flex; justify-content: space-between; align-items: center;
-      padding: 0 20px; flex-shrink: 0;
-    }
-
-    .brand { font-weight: bold; letter-spacing: 1px; color: var(--neon-cyan); font-size: 1.2em; text-shadow: 0 0 5px rgba(0, 243, 255, 0.4); }
-    .brand span { font-size: 0.7em; color: var(--text-muted); font-weight: normal; margin-left: 10px; }
-
-    .center-status { width: 300px; text-align: center; }
-    .pill { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 0.85em; font-weight: bold; opacity: 0; transition: opacity 0.2s; margin: 0 5px; }
-    .pill.active { opacity: 1; animation: pulse 2s infinite; }
-    .pill-ffw { background: rgba(255, 191, 0, 0.1); color: var(--neon-amber); border: 1px solid var(--neon-amber); box-shadow: 0 0 10px rgba(255,191,0,0.25); }
-    .pill-disc { background: rgba(255, 51, 51, 0.1); color: var(--neon-red); border: 1px solid var(--neon-red); box-shadow: 0 0 10px rgba(255,51,51,0.25); }
-
-    @keyframes pulse { 0% { box-shadow: 0 0 5px currentColor; } 50% { box-shadow: 0 0 15px currentColor; } 100% { box-shadow: 0 0 5px currentColor; } }
-
-    .lag-summary { text-align: right; font-family: monospace; display: flex; flex-direction: column; justify-content: center; }
-    .lag-main { font-size: 1.6em; color: var(--text-main); font-weight: bold; line-height: 1.1; }
-    .lag-details { font-size: 1.1em; color: var(--text-muted); margin-top: 2px; }
-
-    /* --- Navigation --- */
-    nav { height: var(--tab-height); background-color: #0f0f16; display: flex; border-bottom: 1px solid #333; flex-shrink: 0; }
-    .tab-btn { background: transparent; border: none; color: var(--text-muted); padding: 0 25px; font-size: 1em; cursor: pointer; border-right: 1px solid #222; transition: all 0.2s; }
-    .tab-btn:hover { color: #fff; background: #161620; }
-    .tab-btn.active { color: var(--neon-cyan); background: #1a1a24; box-shadow: inset 0 -3px 0 var(--neon-cyan); }
-
-    /* --- Main Content --- */
-    main { flex-grow: 1; position: relative; overflow: hidden; padding: 15px; }
-    .tab-content { display: none; height: 100%; width: 100%; flex-direction: column; }
-    .tab-content.active { display: flex; }
-
-    /* --- Racing Tab --- */
-    .gauges-container { display: flex; justify-content: center; align-items: center; gap: 60px; flex-grow: 1; padding-bottom: 20px; }
-    .gauge-wrapper { display: flex; flex-direction: column; align-items: center; width: 320px; }
-    .gauge-canvas { margin-bottom: 15px; }
-    .gauge-labels { display: flex; justify-content: space-between; width: 100%; font-family: monospace; font-size: 1.8em; color: var(--text-muted); font-weight: bold; }
-    .status-strip { display: flex; justify-content: center; gap: 15px; padding: 10px; background: #0f0f16; border-radius: 8px; border: 1px solid #333; margin-bottom: 15px; flex-shrink: 0; }
-    .status-chip { padding: 5px 15px; border-radius: 4px; font-size: 0.9em; font-weight: bold; background: #222; color: #555; text-transform: uppercase; transition: all 0.2s; }
-    .status-chip.active-red { background: rgba(255, 51, 51, 0.2); color: var(--neon-red); box-shadow: 0 0 8px var(--neon-red); border: 1px solid var(--neon-red); }
-    .status-chip.active-amber { background: rgba(255, 191, 0, 0.2); color: var(--neon-amber); box-shadow: 0 0 8px var(--neon-amber); border: 1px solid var(--neon-amber); }
-    .status-chip.active-blue { background: rgba(0, 243, 255, 0.2); color: var(--neon-cyan); box-shadow: 0 0 8px var(--neon-cyan); border: 1px solid var(--neon-cyan); }
-    .status-chip.active-green { background: rgba(57, 255, 20, 0.2); color: var(--neon-green); box-shadow: 0 0 8px var(--neon-green); border: 1px solid var(--neon-green); }
-    .ticker-container { height: 100px; background: #000; border: 1px solid #333; border-radius: 4px; padding: 10px; overflow-y: hidden; font-family: monospace; font-size: 1em; flex-shrink: 0; }
-    .ticker-list { display: flex; flex-direction: column-reverse; }
-    .ticker-item { margin-bottom: 4px; border-bottom: 1px solid #222; padding-bottom: 2px; }
-    .ticker-time { color: var(--text-muted); margin-right: 10px; }
-
-    /* --- Lag Tab --- */
-    .lag-panel { display: grid; grid-template-rows: max-content 35vh; align-content: start; height: 100%; gap: 20px; }
-    .lag-metrics-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; }
-    .metric-card { background: #0f0f16; border: 1px solid #333; border-radius: 8px; padding: 15px; text-align: center; }
-    .metric-card h3 { margin: 0 0 5px 0; font-size: 1em; color: var(--text-muted); }
-    .metric-card .value { font-size: 1.8em; font-weight: bold; font-family: monospace; }
-    .metric-avg { font-size: 0.8em; color: #555; margin-top: 5px; font-family: monospace; }
-    .chart-container { background: #0f0f16; border: 1px solid #333; border-radius: 8px; padding: 15px; position: relative; overflow: hidden; }
-
-    /* --- Signals Tab --- */
-    .signals-layout { display: grid; grid-template-rows: 30vh 1fr; gap: 20px; height: 100%; }
-    .waveforms-row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; min-height: 0; }
-    .waveform-card { background: #0f0f16; border: 1px solid #333; border-radius: 8px; padding: 10px; display: flex; flex-direction: column; position: relative; overflow: hidden; min-height: 0; }
-    .waveform-card h4 { margin: 0 0 10px 0; color: var(--text-muted); font-size: 1.1em; flex-shrink: 0; }
-    .events-table-container { background: #0f0f16; border: 1px solid #333; border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
-    .events-header { background: #1a1a24; padding: 10px; display: grid; grid-template-columns: 100px 150px 1fr 120px; font-weight: bold; font-size: 1em; border-bottom: 1px solid #333; flex-shrink: 0; align-items: center; }
-    .events-list { overflow-y: auto; flex-grow: 1; font-family: monospace; font-size: 1em; }
-    .event-row { display: grid; grid-template-columns: 100px 150px 1fr 120px; padding: 6px 10px; border-bottom: 1px solid #222; }
-    .event-row:hover { background-color: #1a1a24; }
-    .btn-export { background: #222; border: 1px solid #555; color: #fff; padding: 6px 12px; cursor: pointer; border-radius: 4px; font-size: 0.85em; }
-    .btn-export:hover { background: #333; border-color: var(--neon-cyan); }
-
-    /* --- Telemetry Map --- */
-    .tele-container { height: 100%; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 30px; }
-    .tele-group { display: flex; flex-direction: column; }
-    .tele-group-header { color: var(--neon-cyan); border-bottom: 1px solid #333; padding-bottom: 5px; margin-bottom: 15px; font-size: 1.1em; text-transform: uppercase; font-weight: bold; }
-    .tele-grid-section { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 15px; }
-    .tele-card { background: #161620; border: 1px solid #333; border-radius: 6px; padding: 15px; cursor: pointer; transition: all 0.2s; }
-    .tele-card:hover { border-color: var(--neon-cyan); background: #1a1a24; transform: translateY(-2px); }
-    .tele-card h5 { margin: 0 0 5px 0; color: var(--text-muted); font-size: 0.85em; text-transform: uppercase; }
-    .tele-card .tele-val { font-size: 1.4em; font-family: monospace; font-weight: bold; color: #fff; word-break: break-all; }
-    .tele-val.warn-red { color: var(--neon-red); text-shadow: 0 0 5px var(--neon-red); }
-
-    /* --- Config Tab --- */
-    .config-panel { padding: 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 40px; overflow-y: auto; }
-    .config-group { background: #161620; border: 1px solid #333; border-radius: 8px; padding: 20px; }
-    .config-group h3 { margin-top: 0; color: var(--neon-cyan); border-bottom: 1px solid #444; padding-bottom: 10px; }
-    .form-row { margin-bottom: 15px; display: flex; flex-direction: column; }
-    .form-row label { color: #aaa; font-size: 0.9em; margin-bottom: 5px; }
-    .form-row input, .form-row select { background: #000; border: 1px solid #444; color: #fff; padding: 10px; font-family: monospace; font-size: 1em; }
-    .form-row input[type="checkbox"] { width: 22px; height: 22px; cursor: pointer; }
-    .row-inline { flex-direction: row; align-items: center; gap: 12px; }
-
-    /* --- Modals/Tips (DOM restored) --- */
-    .hover-tip { position: fixed; background: rgba(0,0,0,0.95); border: 1px solid var(--neon-cyan); color: var(--neon-cyan); padding: 8px 12px; border-radius: 4px; font-size: 0.85em; pointer-events: none; z-index: 1000; opacity: 0; transition: opacity 0.1s; transform: translateY(-100%); margin-top: -10px; }
-    .hover-tip.visible { opacity: 1; }
-    .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 2000; display: flex; justify-content: center; align-items: center; opacity: 0; pointer-events: none; transition: opacity 0.2s; }
-    .modal-overlay.open { opacity: 1; pointer-events: auto; }
-    .modal-card { background: #1a1a24; border: 1px solid var(--neon-cyan); box-shadow: 0 0 30px rgba(0, 243, 255, 0.3); width: 550px; max-width: 90%; padding: 25px; border-radius: 12px; position: relative; }
-    .modal-card h2 { margin-top: 0; color: var(--neon-cyan); border-bottom: 1px solid #333; padding-bottom: 10px; }
-    .modal-card p { color: #e0e0e0; line-height: 1.6; font-size: 1.05em; }
-    .modal-close { position: absolute; top: 15px; right: 15px; background: none; border: none; color: #777; font-size: 2em; cursor: pointer; line-height: 1; }
-    .modal-close:hover { color: #fff; }
-
-    /* --- Error Handling UI --- */
-    #global-error { position: fixed; bottom: 0; left: 0; width: 100%; background: #c00; color: #fff; padding: 15px; font-family: monospace; font-size: 12px; z-index: 9999; display: none; white-space: pre-wrap; overflow-y: auto; max-height: 200px; border-top: 2px solid #fff; }
-
-    canvas { display: block; width: 100%; height: 100%; }
-  </style>
-
-  <script>
-    // --- 0. EMERGENCY ERROR BOX ---
-    window.onerror = function(msg, url, line, col, error) {
-      const box = document.getElementById('global-error');
-      if (box) {
-        box.style.display = 'block';
-        box.textContent += `[JS ERROR] ${msg}\nLine: ${line}, Col: ${col}\n${error ? error.stack : ''}\n\n`;
-      }
-      return false;
-    };
-  </script>
-</head>
-
-<body>
-  <div id="global-error"></div>
-
-  <header>
-    <div class="brand">PedDash <span id="session-status">Telemetry Arcade</span></div>
-    <div class="center-status">
-      <div id="disc-indicator" class="pill pill-disc">⚠ DISCONNECTED</div>
-      <div id="ffw-indicator" class="pill pill-ffw">⏩ FFW CATCH-UP</div>
-    </div>
-    <div class="lag-summary">
-      <div class="lag-main">Latency: <span id="hdr-total-lag" class="txt-red">--</span> ms</div>
-      <div class="lag-details">
-        Ped: <span id="hdr-ped-lag">00</span> | Brg: <span id="hdr-brg-lag">00</span> | Dsh: <span id="hdr-dsh-lag">00</span>
-      </div>
-    </div>
-  </header>
-
-  <nav>
-    <button class="tab-btn active" id="btn-racing" onclick="switchTab('tab-racing')">Racing</button>
-    <button class="tab-btn" id="btn-lag" onclick="switchTab('tab-lag')">Lag & Timing</button>
-    <button class="tab-btn" id="btn-signals" onclick="switchTab('tab-signals')">Signals & Events</button>
-    <button class="tab-btn" id="btn-telemetry" onclick="switchTab('tab-telemetry')">Data Map</button>
-    <button class="tab-btn" id="btn-config" onclick="switchTab('tab-config')">Configuration</button>
-  </nav>
-
-  <main>
-    <!-- Tab 1: Racing -->
-    <div id="tab-racing" class="tab-content active">
-      <div class="gauges-container">
-        <div class="gauge-wrapper">
-          <canvas id="canvas-gas" width="300" height="300" class="gauge-canvas"></canvas>
-          <div class="gauge-labels">
-            <span>PHYS: <span id="lbl-gas-phys">0%</span></span>
-            <span>LOG: <span id="lbl-gas-log">0%</span></span>
-          </div>
-        </div>
-        <div class="gauge-wrapper">
-          <canvas id="canvas-clutch" width="300" height="300" class="gauge-canvas"></canvas>
-          <div class="gauge-labels">
-            <span>PHYS: <span id="lbl-clutch-phys">0%</span></span>
-            <span>LOG: <span id="lbl-clutch-log">0%</span></span>
-          </div>
-        </div>
-      </div>
-      <div class="status-strip">
-        <div id="status-drift" class="status-chip">Drift Alert</div>
-        <div id="status-noise" class="status-chip">Rudder Noise</div>
-        <div id="status-auto" class="status-chip">Auto-Adjust</div>
-        <div id="status-racing" class="status-chip">Racing</div>
-      </div>
-      <div class="ticker-container"><div id="ticker-list" class="ticker-list"></div></div>
-    </div>
-
-    <!-- Tab 2: Lag -->
-    <div id="tab-lag" class="tab-content">
-      <div class="lag-panel">
-        <div class="lag-metrics-grid">
-          <div class="metric-card"><h3>Latency Total</h3><div class="value txt-red" id="card-total-lag">0 ms</div><div class="metric-avg" id="avg-total-lag">Avg: 0</div></div>
-          <div class="metric-card"><h3>PedMon (C)</h3><div class="value txt-cyan" id="card-ped-lag">0 ms</div><div class="metric-avg" id="avg-ped-lag">Avg: 0</div></div>
-          <div class="metric-card"><h3>Bridge (PS)</h3><div class="value txt-green" id="card-brg-lag">0 ms</div><div class="metric-avg" id="avg-brg-lag">Avg: 0</div></div>
-          <div class="metric-card"><h3>Dash (JS)</h3><div class="value txt-mag" id="card-dsh-lag">0 ms</div><div class="metric-avg" id="avg-dsh-lag">Avg: 0</div></div>
-        </div>
-        <div class="chart-container"><canvas id="canvas-lag-chart"></canvas></div>
-      </div>
-    </div>
-
-    <!-- Tab 3: Signals -->
-    <div id="tab-signals" class="tab-content">
-      <div class="signals-layout">
-        <div class="waveforms-row">
-          <div class="waveform-card"><h4>Gas Input History</h4><canvas id="canvas-wave-gas"></canvas></div>
-          <div class="waveform-card"><h4>Clutch Input History</h4><canvas id="canvas-wave-clutch"></canvas></div>
-        </div>
-        <div class="events-table-container">
-          <div class="events-header">
-            <div>Time</div><div>Type</div><div>Details</div>
-            <div style="text-align:right;"><button class="btn-export" onclick="exportLogs()">Export CSV</button></div>
-          </div>
-          <div id="full-event-list" class="events-list"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Tab 4: Telemetry -->
-    <div id="tab-telemetry" class="tab-content">
-      <div id="tele-container" class="tele-container"></div>
-    </div>
-
-    <!-- Tab 5: Configuration -->
-    <div id="tab-config" class="tab-content">
-      <div class="config-panel">
-        <div class="config-group">
-          <h3>Polling Control</h3>
-          <div class="form-row">
-            <label>Update Interval (ms) - Set 0 for Smart</label>
-            <input type="number" id="cfg-interval" value="50" onchange="updateConfig('UPDATE_INTERVAL_MS', this.value)">
-          </div>
-          <div class="form-row">
-            <label>Smart Algorithm Mode</label>
-            <select id="cfg-algo" onchange="updateConfig('ALGO_MODE', this.value)">
-              <option value="SMOOTH_CONVERGENCE" selected>SMOOTH_CONVERGENCE (Recommended)</option>
-              <option value="FRAME_LOCK">FRAME_LOCK</option>
-              <option value="ALGO_DIGITAL_PLL">ALGO_DIGITAL_PLL (ChatGPT)</option>
-              <option value="ALGO_INTEGRAL_FLOW">ALGO_INTEGRAL_FLOW</option>
-              <option value="ALGO_GROK_PI">ALGO_GROK_PI</option>
-              <option value="ALGO_DEEPSEEK_PI">ALGO_DEEPSEEK_PI</option>
-              <option value="ALGO_QWEN_HYSTERESIS">ALGO_QWEN_HYSTERESIS</option>
-              <option value="ALGO_CLAUDE_EWAP">ALGO_CLAUDE_EWAP</option>
-              <option value="ALGO_LEGACY">ALGO_LEGACY</option>
-            </select>
-          </div>
-          <div class="form-row">
-            <label>Manual Update Factor</label>
-            <input type="number" step="0.01" id="cfg-factor" value="1.00" onchange="updateConfig('MANUAL_UPDATE_FACTOR', this.value)">
-          </div>
-        </div>
-        <div class="config-group">
-          <h3>System & Debug</h3>
-          <div class="form-row row-inline"><input type="checkbox" id="cfg-bounds" checked onchange="updateConfig('USE_BOUNDS_CHECK', this.checked)"><label>Use Bounds Check</label></div>
-          <div class="form-row row-inline"><input type="checkbox" id="cfg-debug" checked onchange="updateConfig('ENABLE_ALGO_DEBUG', this.checked)"><label>Algorithm Debug Logging</label></div>
-          <div class="form-row row-inline"><input type="checkbox" id="cfg-empty" checked onchange="updateConfig('LOG_EMPTY_FRAMES', this.checked)"><label>Log Empty Frames</label></div>
-          <div class="form-row"><label>Max History (lines)</label><input type="number" id="cfg-history" value="1000" onchange="updateConfig('MAX_HISTORY_LINES', this.value)"></div>
-        </div>
-      </div>
-    </div>
-  </main>
-
-  <!-- Overlays (RESTORED so telemetry cards don’t crash) -->
-  <div id="hover-tip" class="hover-tip">Quick Info</div>
-  <div id="modal-overlay" class="modal-overlay" onclick="closeModal()">
-    <div class="modal-card" onclick="event.stopPropagation()">
-      <button class="modal-close" onclick="closeModal()">&times;</button>
-      <h2 id="modal-title">Title</h2>
-      <p id="modal-desc">Description goes here.</p>
-    </div>
-  </div>
-
-  <script>
-    /**
-     * 1. CONFIGURATION
-     */
-    const config = {
-      UPDATE_INTERVAL_MS: 50,
-      ALGO_MODE: "SMOOTH_CONVERGENCE",
-      MANUAL_UPDATE_FACTOR: 1.00,
-      USE_BOUNDS_CHECK: true,
-      ENABLE_ALGO_DEBUG: true,
-      LOG_EMPTY_FRAMES: true,
-      MAX_HISTORY_LINES: 1000
-    };
-
-    const BRIDGE_URL = "http://localhost:8181/";
-    const MAX_CHART_HISTORY = 300;
-    const AVG_WINDOW_S = 3;
-
-    /**
-     * 2. STATE
-     */
-    const state = {
-      currentTab: 'tab-racing',
-      isConnected: false,
-      hasData: false,
-      activeInterval: 50,
-      getCounter: 0,
-      frame: {},
-      target: { gasP:0, gasL:0, clP:0, clL:0, lagT:0, lagP:0, lagB:0, lagD:0 },
-      display:{ gasP:0, gasL:0, clP:0, clL:0, lagT:0, lagP:0, lagB:0, lagD:0 },
-      lagHistory: [],
-      pedalHistory: [],
-      events: [],
-      avgLagT:0, avgLagP:0, avgLagB:0, avgLagD:0,
-      lastProducerPeriod: 100,
-      netFailStreak: 0
-    };
-
-    // Algo internal state (kept, but reset safely)
-    const algoState = {
-      integral: 0,
-      history: [],
-      nextTarget: NaN,
-      mode: "ACQUIRE",
-      holdBad: 0,
-      errLP: 0,
-      errInt: 0,
-      ewap_ema: 1.0,
-      ewap_int: 0,
-      qwen_int: 0,
-      qwen_dir: 0,
-      flowAvg: 1.0
-    };
-
-    function resetAlgoState() {
-      algoState.integral = 0;
-      algoState.history = [];
-      algoState.nextTarget = NaN;
-      algoState.mode = "ACQUIRE";
-      algoState.holdBad = 0;
-
-      algoState.errLP = 0;
-      algoState.errInt = 0;
-
-      algoState.ewap_ema = 1.0;
-      algoState.ewap_int = 0;
-
-      algoState.qwen_int = 0;
-      algoState.qwen_dir = 0;
-
-      algoState.flowAvg = 1.0;
-    }
-
-    // UI cache
-    let els = {};
-
-    // Canvas contexts (explicit globals so there’s no “window property” ambiguity)
-    let ctxGas = null, ctxClutch = null, ctxLag = null, ctxWaveGas = null, ctxWaveClutch = null;
-
-    /**
-     * 3. TELEMETRY DEFINITIONS
-     */
-    const TELE_GROUPS = [
-      { title: "Pedal Metrics", keys: ['gas_physical_pct', 'gas_logical_pct', 'clutch_physical_pct', 'clutch_logical_pct'] },
-      { title: "Raw Inputs", keys: ['rawGas', 'gasValue', 'rawClutch', 'clutchValue', 'axisMax', 'axis_normalization_enabled', 'joy_ID', 'joy_Flags'] },
-      { title: "Logic State", keys: ['isRacing', 'peakGasInWindow', 'best_estimate_percent', 'lastFullThrottleTime', 'lastGasActivityTime', 'repeatingClutchCount'] },
-      { title: "Gas Tuning", keys: ['gas_deadzone_in', 'gas_deadzone_out', 'gas_min_usage_percent', 'gas_window', 'gas_timeout', 'auto_gas_deadzone_enabled'] },
-      { title: "Latency (ms)", keys: ['lagTotal', 'fullLoopTime_ms', 'metricLoopProcessMs', 'metricHttpProcessMs', 'lagDash', 'activeUpdateInterval'] },
-      { title: "Event Flags", keys: ['gas_alert_triggered', 'clutch_alert_triggered', 'gas_auto_adjust_applied', 'gas_estimate_decreased', 'controller_disconnected', 'controller_reconnected'] },
-      { title: "Diagnostics", keys: ['pedDashGetCount', 'algoMode', 'framesReceivedLastFetch', 'telemetry_sequence', 'batchId', 'receivedAtUnixMs', 'currentTime', 'pendingFrameCount'] }
-    ];
-
-    const TELE_DEFS = {
-      gas_physical_pct: { label: "Gas Phys %", short: "gas_physical_pct: Raw Input", long: "Raw percentage of gas pedal physical travel. (Source: PedMon)" },
-      gas_logical_pct:  { label: "Gas Log %",  short: "gas_logical_pct: Game Value", long: "Final input value sent to game after deadzones. (Source: PedMon)" },
-      clutch_physical_pct: { label: "Clutch Phys %", short: "clutch_physical_pct: Raw Input", long: "Raw percentage of clutch physical travel. (Source: PedMon)" },
-      clutch_logical_pct:  { label: "Clutch Log %",  short: "clutch_logical_pct: Game Value", long: "Final clutch value sent to the game. (Source: PedMon)" },
-      rawGas: { label: "Gas Raw", short: "rawGas: Hardware units", long: "Direct value from joyGetPosEx. (Source: PedMon)" },
-      gasValue: { label: "Gas Norm", short: "gasValue: Normalized units", long: "Hardware value after inversion correction. (Source: PedMon)" },
-      rawClutch: { label: "Clutch Raw", short: "rawClutch: Hardware units", long: "Direct value from JoyAPI. (Source: PedMon)" },
-      clutchValue: { label: "Clutch Norm", short: "clutchValue: Normalized units", long: "Hardware value after inversion. (Source: PedMon)" },
-      axisMax: { label: "Axis Max", short: "axisMax: Scale", long: "The maximum range of the joystick axis. (Source: PedMon)" },
-      axis_normalization_enabled: { label: "Norm Flag", short: "axis_normalization_enabled: Boolean flag", long: "If 1, PedMon mirrors inverted hardware signals. (Source: PedMon)" },
-      joy_ID: { label: "Joy ID", short: "joy_ID: Integer ID", long: "Windows Joystick ID currently monitored. (Source: PedMon)" },
-      joy_Flags: { label: "Joy Flags", short: "joy_Flags: Bitmask", long: "WinMM flags used for capturing data. (Source: PedMon)" },
-      isRacing: { label: "Is Racing", short: "isRacing: Boolean flag", long: "Indicates if the user is currently driving. (Source: PedMon)" },
-      peakGasInWindow: { label: "Peak Gas", short: "peakGasInWindow: Max", long: "Highest gas value reached in current window. (Source: PedMon)" },
-      best_estimate_percent: { label: "Best Est %", short: "best_estimate_percent", long: "Suggested ideal deadzone for pedal health. (Source: PedMon)" },
-      lastFullThrottleTime: { label: "Last Full T", short: "lastFullThrottleTime", long: "TickCount when full throttle was last hit. (Source: PedMon)" },
-      lastGasActivityTime: { label: "Last Activity", short: "lastGasActivityTime", long: "TickCount of last pedal movement. (Source: PedMon)" },
-      repeatingClutchCount: { label: "Noise Reps", short: "repeatingClutchCount", long: "Sequential frames of noise detected. (Source: PedMon)" },
-      gas_deadzone_in: { label: "DZ In %", short: "gas_deadzone_in", long: "Percentage of travel treated as idle. (Source: PedMon)" },
-      gas_deadzone_out: { label: "DZ Out %", short: "gas_deadzone_out", long: "Percentage of travel treated as 100%. (Source: PedMon)" },
-      gas_min_usage_percent: { label: "Min Usage %", short: "gas_min_usage_percent", long: "Min travel needed to validate drift checks. (Source: PedMon)" },
-      gas_window: { label: "Gas Window", short: "gas_window: Seconds", long: "Duration checked for full throttle events. (Source: PedMon)" },
-      gas_timeout: { label: "Gas Timeout", short: "gas_timeout: Seconds", long: "Seconds of idle before assuming paused. (Source: PedMon)" },
-      auto_gas_deadzone_enabled: { label: "Auto Adjust", short: "auto_gas_deadzone_enabled: Boolean", long: "If 1, PedMon lowers DZ Out automatically. (Source: PedMon)" },
-
-      lagTotal: { label: "Total Latency", short: "lagTotal", long: "Total time across C, PS, and JS layers. (Source: PedDash)" },
-      fullLoopTime_ms: { label: "C Loop", short: "fullLoopTime_ms", long: "Processing time of the C monitor loop. (Source: PedMon)" },
-      metricLoopProcessMs: { label: "PS Loop", short: "metricLoopProcessMs", long: "Time PowerShell took to read shared memory. (Source: PedBridge)" },
-      metricHttpProcessMs: { label: "PS HTTP", short: "metricHttpProcessMs", long: "Time Bridge took to serve JSON request. (Source: PedBridge)" },
-      lagDash: { label: "JS Render", short: "lagDash: JS Time", long: "Time taken by browser to fetch and update UI. (Source: PedDash)" },
-      activeUpdateInterval: { label: "Poll Interval", short: "activeUpdateInterval", long: "Current sleep time between fetches. (Source: PedDash)" },
-
-      gas_alert_triggered: { label: "Evt: Gas", short: "gas_alert_triggered", long: "Fired when gas drift is detected. (Source: PedMon)" },
-      clutch_alert_triggered: { label: "Evt: Clutch", short: "clutch_alert_triggered", long: "Fired when rudder noise is detected. (Source: PedMon)" },
-      gas_auto_adjust_applied: { label: "Evt: AutoAdj", short: "gas_auto_adjust_applied", long: "Fired when deadzone was adjusted. (Source: PedMon)" },
-      gas_estimate_decreased: { label: "Evt: EstDec", short: "gas_estimate_decreased", long: "Fired on new estimation discovery. (Source: PedMon)" },
-      controller_disconnected: { label: "Evt: Disc", short: "controller_disconnected", long: "Fired when pedal device is lost. (Source: PedMon)" },
-      controller_reconnected: { label: "Evt: Reconn", short: "controller_reconnected", long: "Fired when device is re-found. (Source: PedMon)" },
-
-      pedDashGetCount: { label: "GET Count", short: "pedDashGetCount", long: "Total requests issued by the dashboard. (Source: PedDash)" },
-      algoMode: { label: "Algo Mode", short: "algoMode", long: "The currently selected Smart Algorithm. (Source: PedDash)" },
-      framesReceivedLastFetch: { label: "Frames Rx", short: "framesReceivedLastFetch", long: "Data points delivered in the last batch. (Source: PedDash)" },
-      pendingFrameCount: { label: "Pending", short: "pendingFrameCount", long: "Frames waiting in PedBridge queue. (Source: PedBridge)" },
-      telemetry_sequence: { label: "Seq ID", short: "telemetry_sequence", long: "Increments per PedMon frame. (Source: PedMon)" },
-      batchId: { label: "Batch ID", short: "batchId", long: "Increments per PedBridge response. (Source: PedBridge)" },
-      receivedAtUnixMs: { label: "Bridge Rx", short: "receivedAtUnixMs", long: "Time bridge served response (ms since epoch). (Source: PedBridge)" },
-      currentTime: { label: "C Current", short: "currentTime", long: "Windows TickCount at capture. (Source: PedMon)" }
-    };
-
-    /**
-     * 4. STRATEGIES
-     */
-    const AlgorithmStrategies = {
-      "FRAME_LOCK": (rec, tP, current) => {
-        const cruise = tP + 5;
-        if (rec === 0) return tP;
-        if (rec > 1) return 10;
-        return cruise;
-      },
-      "SMOOTH_CONVERGENCE": (rec, tP, current) => {
-        if (rec === 0) return Math.min(current * 1.1, tP * 1.5);
-        if (rec === 1) return (current * 0.9) + (tP * 0.1);
-        return current * 0.85;
-      },
-      "ALGO_DIGITAL_PLL": (rec, tP, current) => {
-        const now = performance.now();
-        if (!Number.isFinite(algoState.nextTarget)) algoState.nextTarget = now;
-
-        // Queue-depth phase detector:
-        // rec==0 => too early (positive error), rec==1 => ok, rec>1 => too late (negative error)
-        let e = (rec <= 0) ? 1 : (rec === 1 ? 0 : -(rec - 1));
-
-        // Loop filter (low-pass + integral)
-        algoState.errLP += 0.25 * (e - algoState.errLP);
-        algoState.errInt = Math.max(-8, Math.min(8, algoState.errInt + algoState.errLP));
-
-        let adjust = (6.0 * algoState.errLP) + (0.6 * algoState.errInt);
-
-        // Acquire/Hold gating (slightly conservative for jittery browsers)
-        if (algoState.mode === "ACQUIRE") {
-          if (rec === 1) adjust -= 0.25;
-          if (rec <= 0) {
-            adjust += 5;
-            algoState.mode = "HOLD";
-            algoState.holdBad = 0;
-            algoState.errLP = 0;
-            algoState.errInt = 0;
-          }
-        } else {
-          if (rec !== 1) {
-            if (++algoState.holdBad >= 2) {
-              algoState.mode = "ACQUIRE";
-              algoState.holdBad = 0;
-              algoState.errInt *= 0.5;
-            }
-          } else {
-            algoState.holdBad = 0;
-          }
-        }
-
-        adjust = Math.max(-25, Math.min(25, adjust));
-
-        // Step near producer period
-        const step = Math.max(tP * 0.6, Math.min(tP * 1.4, tP + adjust));
-        algoState.nextTarget += step;
-
-        // If we fell behind, jump forward by whole steps
-        if (algoState.nextTarget < now + 2) {
-          const def = (now + 2) - algoState.nextTarget;
-          algoState.nextTarget += Math.ceil(def / step) * step;
-        }
-
-        return Math.max(0, algoState.nextTarget - now);
-      },
-      "ALGO_INTEGRAL_FLOW": (rec, tP, current) => {
-        algoState.flowAvg = (0.2 * rec) + 0.8 * algoState.flowAvg;
-        return current - ((algoState.flowAvg - 1.0) * 2.0);
-      },
-      "ALGO_GROK_PI": (rec, tP, current) => {
-        const err = 1 - rec;
-        algoState.integral = Math.max(-200, Math.min(200, algoState.integral + err));
-        return current + (10 * err) + (0.05 * algoState.integral);
-      },
-      "ALGO_DEEPSEEK_PI": (rec, tP, current) => {
-        const err = 1.0 - rec;
-        algoState.history.push(err);
-        if (algoState.history.length > 5) algoState.history.shift();
-
-        const smErr = algoState.history.reduce((a,b)=>a+b,0) / algoState.history.length;
-        algoState.integral = Math.max(-200, Math.min(200, algoState.integral + smErr * 50));
-        return (0.7 * current) + 0.3 * (tP + (15 * smErr) + (0.3 * algoState.integral));
-      },
-      "ALGO_QWEN_HYSTERESIS": (rec, tP, current) => {
-        if (rec === 0) return Math.min(200, current * 1.15);
-        const pErr = rec - 1;
-        const adj = 8 * pErr;
-        algoState.qwen_int = Math.max(-tP, Math.min(tP, algoState.qwen_int + pErr));
-        return current - (adj + 0.05 * algoState.qwen_int);
-      },
-      "ALGO_CLAUDE_EWAP": (rec, tP, current) => {
-        algoState.ewap_ema = (0.3 * rec) + 0.7 * algoState.ewap_ema;
-        const err = algoState.ewap_ema - 1.0;
-        algoState.ewap_int = Math.max(-20, Math.min(20, algoState.ewap_int + err));
-
-        let corr = (0.15 * err) + (0.02 * algoState.ewap_int);
-        if (rec === 0 && algoState.ewap_ema < 0.5) corr = Math.min(corr, -0.05);
-        if (rec >= 3) corr = Math.max(corr, 0.2);
-
-        return current - (corr * tP);
-      },
-      "ALGO_LEGACY": (rec, tP, current) => {
-        if (rec === 1) return tP;
-        if (rec > 1) return current * (1 / rec);
-        return tP;
-      }
-    };
-
-    /**
-     * 5. UTILS
-     */
-    function safeSetText(el, text) { if (el) el.textContent = text; }
-
-    // FIXED: pushHistory was missing (primary crash)
-    function pushHistory(arr, item, limit = MAX_CHART_HISTORY) {
-      if (!Array.isArray(arr)) return;
-      arr.push(item);
-      if (arr.length > limit) {
-        arr.splice(0, arr.length - limit);
-      }
-    }
-
-    function switchTab(id) {
-      state.currentTab = id;
-      document.querySelectorAll('.tab-btn').forEach(b => {
-        const btnId = 'btn-' + id.split('-')[1];
-        b.classList.toggle('active', b.id === btnId);
-      });
-      document.querySelectorAll('.tab-content').forEach(t => t.classList.toggle('active', t.id === id));
-    }
-
-    function updateConfig(k, v) {
-      if (!(k in config)) return;
-
-      const prev = config[k];
-      let next = v;
-
-      if (typeof prev === 'number') next = Number.parseFloat(v);
-      if (typeof prev === 'boolean') next = Boolean(v);
-
-      if (Number.isNaN(next) && typeof prev === 'number') next = prev;
-
-      config[k] = next;
-
-      if (k === 'MAX_HISTORY_LINES') {
-        config.MAX_HISTORY_LINES = Math.max(50, Math.min(50000, (config.MAX_HISTORY_LINES | 0) || 1000));
-      }
-
-      if (k === 'ALGO_MODE') {
-        logEvent("System", `Algo: ${config.ALGO_MODE}`);
-        resetAlgoState();
-      }
-    }
-
-    function toggleChip(el, act, cls) { if (el) el.classList.toggle(cls, Boolean(act)); }
-
-    function resizeCanvas(c) {
-      if (!c) return;
-      const r = c.parentElement.getBoundingClientRect();
-      const h = r.height - (c.previousElementSibling ? 30 : 0);
-      if (c.width !== r.width || c.height !== h) { c.width = r.width; c.height = h; }
-    }
-
-    function calcAverages() {
-      const count = Math.max(1, Math.floor((AVG_WINDOW_S * 1000) / (state.activeInterval || 50)));
-      if (state.lagHistory.length === 0) return;
-      const recent = state.lagHistory.slice(-count);
-      const len = recent.length;
-      state.avgLagT = recent.reduce((s,i) => s + i.total, 0) / len;
-      state.avgLagP = recent.reduce((s,i) => s + i.ped, 0) / len;
-      state.avgLagB = recent.reduce((s,i) => s + i.brg, 0) / len;
-      state.avgLagD = recent.reduce((s,i) => s + i.dash, 0) / len;
-    }
-
-    function logEvent(t, m) {
-      if (state.events.length > 0 && state.events[0].msg === m && (Date.now() - state.events[0].ts) < 2000) return;
-
-      const d = new Date();
-      const ts = d.toLocaleTimeString('en-US',{hour12:false}) + "." + String(d.getMilliseconds()).padStart(3,'0');
-      const e = { ts: Date.now(), timeStr: ts, type: t, msg: m };
-
-      state.events.unshift(e);
-      if (state.events.length > config.MAX_HISTORY_LINES) state.events.pop();
-
-      // Ticker
-      if (els.tickerList) {
-        const item = document.createElement('div');
-        item.className = 'ticker-item';
-        item.innerHTML = `<span class="ticker-time">${ts}</span><span>${t}: ${m}</span>`;
-        els.tickerList.prepend(item);
-        if (els.tickerList.children.length > 5) els.tickerList.lastElementChild.remove();
-      }
-
-      // Full event table
-      if (els.fullEventList) {
-        const row = document.createElement('div');
-        row.className = 'event-row';
-        let c = '#fff';
-        if (t === 'Alert') c = 'var(--neon-red)';
-        if (t === 'Warn')  c = 'var(--neon-amber)';
-
-        // 4th column left blank (matches header grid)
-        row.innerHTML = `<div>${ts}</div><div style="color:${c}">${t}</div><div>${m}</div><div></div>`;
-        els.fullEventList.prepend(row);
-        if (els.fullEventList.children.length > 200) els.fullEventList.lastElementChild.remove();
-      }
-    }
-
-    function csvEscape(val) {
-      const s = String(val ?? "");
-      return /[",\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
-    }
-
-    function exportLogs() {
-      const header = "Time,Type,Message\n";
-      const rows = state.events.map(e => `${csvEscape(e.timeStr)},${csvEscape(e.type)},${csvEscape(e.msg)}`).join("\n");
-      const csv = header + rows;
-      const blob = new Blob([csv], { type: 'text/csv' });
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.setAttribute('href', url);
-      a.setAttribute('download', 'peddash_logs.csv');
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      window.URL.revokeObjectURL(url);
-    }
-
-    /**
-     * 6. DRAWING
-     */
-    function drawDualGauge(ctx, label, phys, log) {
-      if (!ctx) return;
-      const w = ctx.canvas.width, h = ctx.canvas.height, cx = w/2, cy = h/2, rO = (w/2)-15, rI = rO-30;
-      ctx.clearRect(0,0,w,h);
-      ctx.lineCap = 'round';
-      ctx.lineWidth = 20;
-      ctx.strokeStyle = '#222';
-      ctx.beginPath(); ctx.arc(cx,cy,rO,0.75*Math.PI,2.25*Math.PI); ctx.stroke();
-      ctx.beginPath(); ctx.arc(cx,cy,rI,0.75*Math.PI,2.25*Math.PI); ctx.stroke();
-
-      const pA = 0.75*Math.PI + (1.5*Math.PI*(Math.max(0, Math.min(100, phys))/100));
-      const grad = ctx.createLinearGradient(0,0,w,0);
-      grad.addColorStop(0,'#00f3ff');
-      grad.addColorStop(1,'#0088aa');
-      ctx.strokeStyle = phys>0 ? grad : '#222';
-      if (phys > 0) { ctx.beginPath(); ctx.arc(cx,cy,rO,0.75*Math.PI,pA); ctx.stroke(); }
-
-      const lA = 0.75*Math.PI + (1.5*Math.PI*(Math.max(0, Math.min(100, log))/100));
-      const color = (log===0) ? '#fff' : (log>=99 ? '#ff3333' : '#39ff14');
-      ctx.strokeStyle = color;
-      ctx.shadowBlur = 15;
-      ctx.shadowColor = color;
-      ctx.beginPath(); ctx.arc(cx,cy,rI,0.75*Math.PI,lA); ctx.stroke();
-      ctx.shadowBlur = 0;
-
-      ctx.fillStyle = color;
-      ctx.font = "bold 80px monospace";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(Math.round(log), cx, cy);
-
-      ctx.fillStyle = "#777";
-      ctx.font = "bold 32px sans-serif";
-      ctx.fillText(label, cx, cy+60);
-    }
-
-    function drawHistoryChart(ctx, data, keys, colors, min, max, multi) {
-      if (!ctx || !data || data.length < 2) return;
-
-      let mi = (min !== null ? min : 0);
-      let ma = max;
-
-      if (ma === null) {
-        ma = 0;
-        data.forEach(d => keys.forEach(k => { if ((d[k] ?? 0) > ma) ma = d[k]; }));
-        ma = Math.max(ma, 10) * 1.1;
-      }
-
-      const w = ctx.canvas.width, h = ctx.canvas.height, pL=40, pR=10, pT=10, pB=30;
-      const mX = (i)=>pL+(i/(MAX_CHART_HISTORY-1))*(w-pL-pR);
-      const mY = (v)=>h-pB-((v-mi)/(ma-mi))*(h-pT-pB);
-
-      ctx.clearRect(0,0,w,h);
-
-      // Grid
-      ctx.strokeStyle='#222'; ctx.lineWidth=1; ctx.fillStyle='#555';
-      ctx.font='12px monospace'; ctx.textAlign='right';
-      for (let i=0;i<=4;i++){
-        const v = mi+(ma-mi)*(i/4);
-        const y = mY(v);
-        ctx.beginPath(); ctx.moveTo(pL,y); ctx.lineTo(w-pR,y); ctx.stroke();
-        ctx.fillText(v.toFixed(0), pL-5, y+4);
-      }
-
-      // X labels
-      ctx.textAlign='center';
-      for (let i=0;i<5;i++){
-        const x = mX((MAX_CHART_HISTORY-1)*(i/4));
-        const s = ((MAX_CHART_HISTORY*(state.activeInterval||50))/1000) * (1-(i/4));
-        ctx.fillText(s===0 ? "Now" : `-${s.toFixed(0)}s`, x, h-8);
-        ctx.beginPath(); ctx.moveTo(x,h-pB); ctx.lineTo(x,h-pB+5); ctx.stroke();
-      }
-
-      // Lines
-      keys.forEach((k,idx)=>{
-        ctx.beginPath();
-        ctx.strokeStyle = colors[idx];
-        ctx.lineWidth = 2;
-        ctx.shadowBlur = multi ? 0 : 4;
-        ctx.shadowColor = colors[idx];
-
-        data.forEach((d,i)=>{
-          const x = mX(i);
-          const y = mY(d[k] ?? 0);
-          if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
-        });
-
-        ctx.stroke();
-      });
-      ctx.shadowBlur = 0;
-    }
-
-    /**
-     * 7. DATA LOOP
-     */
-    async function dataLoop() {
-      const startFetch = performance.now();
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 2000);
-
-      try {
-        const res = await fetch(BRIDGE_URL, { signal: controller.signal });
-        clearTimeout(timeoutId);
-
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-        const json = await res.json();
-        state.getCounter++;
-
-        const frames = json?.frames || [];
-        const bi = json?.bridgeInfo || {};
-
-        if (frames.length === 0) {
-          if (config.LOG_EMPTY_FRAMES) logEvent("Info", "Bridge: 0 frames received");
-
-          // Maintain a meaningful “0 frames” telemetry indicator
-          state.frame = { ...(state.frame || {}), framesReceivedLastFetch: 0, pendingFrameCount: bi.pendingFrameCount ?? state.frame.pendingFrameCount ?? 0 };
-          updateNonFrameMetrics(startFetch);
-
-          const tp = state.lastProducerPeriod || 100;
-          schedule(0, tp);
-          return;
-        }
-
-        const latest = frames[frames.length - 1];
-
-        latest.framesReceivedLastFetch = frames.length;
-        latest.pendingFrameCount = bi.pendingFrameCount ?? 0;
-        latest.batchId = bi.batchId ?? latest.batchId;
-        latest.receivedAtUnixMs = bi.servedAtUnixMs ?? bi.receivedAtUnixMs ?? latest.receivedAtUnixMs;
-
-        state.isConnected = true;
-        state.netFailStreak = 0;
-
-        if (!state.hasData) { logEvent("System", "Bridge Connected."); state.hasData = true; }
-
-        processFrame(latest, startFetch);
-
-        const tP = (latest.sleep_Time || 100) + (latest.fullLoopTime_ms || 0);
-        state.lastProducerPeriod = tP;
-
-        schedule(frames.length, tP);
-
-      } catch (e) {
-        clearTimeout(timeoutId);
-
-        // AbortError should be treated as a transient timing hiccup, not a hard disconnect
-        if (e && (e.name === "AbortError" || String(e.message).toLowerCase().includes("aborted"))) {
-          state.netFailStreak++;
-          logEvent("Warn", "Fetch timeout/abort (2s) - retrying");
-          if (!state.hasData && state.netFailStreak >= 3) state.isConnected = false;
-          setTimeout(dataLoop, 250);
-          return;
-        }
-
-        state.netFailStreak++;
-        logEvent("Error", e?.message || String(e));
-
-        // Only flip disconnected after repeated failures (prevents 1-off blips killing the UI)
-        if (state.netFailStreak >= 2) {
-          state.isConnected = false;
-          state.target = { gasP:0, gasL:0, clP:0, clL:0, lagT:0, lagP:0, lagB:0, lagD:0 };
-          state.frame = {};
-        }
-
-        setTimeout(dataLoop, 1000);
-      }
-    }
-
-    function schedule(rec, tP) {
-      let sleep = config.UPDATE_INTERVAL_MS;
-
-      if (sleep === 0) {
-        const fn = AlgorithmStrategies[config.ALGO_MODE];
-        try {
-          sleep = fn ? fn(rec, tP, state.activeInterval) : 50;
-          if (!Number.isFinite(sleep)) sleep = 50;
-        } catch (e) {
-          logEvent("Error", `Algo crash: ${e.message}`);
-          sleep = 50;
-        }
-
-        sleep *= config.MANUAL_UPDATE_FACTOR;
-
-        if (config.USE_BOUNDS_CHECK) sleep = Math.max(10, Math.min(sleep, 1000));
-      }
-
-      state.activeInterval = sleep;
-      setTimeout(dataLoop, sleep);
-    }
-
-    function processFrame(f, start) {
-      state.frame = f;
-
-      const dLag = performance.now() - start;
-      f.lagDash = dLag;
-      f.activeUpdateInterval = state.activeInterval;
-      f.pedDashGetCount = state.getCounter;
-      f.algoMode = config.ALGO_MODE;
-
-      const tLag = (f.fullLoopTime_ms||0) + (f.metricLoopProcessMs||0) + (f.metricHttpProcessMs||0) + dLag;
-      f.lagTotal = tLag;
-
-      state.target = {
-        gasP: f.gas_physical_pct || 0,
-        gasL: f.gas_logical_pct || 0,
-        clP: f.clutch_physical_pct || 0,
-        clL: f.clutch_logical_pct || 0,
-        lagT: tLag,
-        lagP: f.fullLoopTime_ms || 0,
-        lagB: (f.metricLoopProcessMs||0) + (f.metricHttpProcessMs||0),
-        lagD: dLag
-      };
-
-      if (f.gas_alert_triggered) logEvent("Alert", `Gas Drift: ${f.percentReached ?? ""}%`);
-      if (f.clutch_alert_triggered) logEvent("Warn", "Rudder Noise");
-      if (f.controller_disconnected) logEvent("Alert", "Controller Lost");
-      if (f.controller_reconnected) logEvent("Info", "Controller Reconnected");
-
-      pushHistory(state.lagHistory, {
-        t: Date.now(),
-        total: tLag,
-        ped: f.fullLoopTime_ms || 0,
-        brg: (f.metricLoopProcessMs||0) + (f.metricHttpProcessMs||0),
-        dash: dLag
-      }, MAX_CHART_HISTORY);
-
-      pushHistory(state.pedalHistory, {
-        t: Date.now(),
-        gasP: f.gas_physical_pct || 0,
-        clP: f.clutch_physical_pct || 0
-      }, MAX_CHART_HISTORY);
-
-      calcAverages();
-    }
-
-    function updateNonFrameMetrics(start) {
-      // Keep lag display active even on empty frames
-      const dLag = performance.now() - start;
-      state.target.lagD = dLag;
-      state.display.lagD = dLag;
-
-      // Keep telemetry updated
-      if (!state.frame) state.frame = {};
-      state.frame.pedDashGetCount = state.getCounter;
-      state.frame.algoMode = config.ALGO_MODE;
-      state.frame.activeUpdateInterval = state.activeInterval;
-    }
-
-    /**
-     * 8. RENDERING
-     */
-    function renderLoop() {
-      const l = 0.2;
-      state.display.gasP += (state.target.gasP - state.display.gasP) * l;
-      state.display.gasL += (state.target.gasL - state.display.gasL) * l;
-      state.display.clP  += (state.target.clP  - state.display.clP ) * l;
-      state.display.clL  += (state.target.clL  - state.display.clL ) * l;
-
-      // Lags snappy
-      state.display.lagT = state.target.lagT;
-      state.display.lagP = state.target.lagP;
-      state.display.lagB = state.target.lagB;
-      state.display.lagD = state.target.lagD;
-
-      renderUI();
-      requestAnimationFrame(renderLoop);
-    }
-
-    function renderUI() {
-      // Header status
-      if (state.isConnected) {
-        safeSetText(els.brandStatus, "Online");
-        if (els.brandStatus) els.brandStatus.style.color = "var(--neon-green)";
-      } else {
-        safeSetText(els.brandStatus, "Connecting...");
-        if (els.brandStatus) els.brandStatus.style.color = "#777";
-      }
-
-      // Disconnect indicator
-      const disc = !state.isConnected || (state.frame && state.frame.controller_disconnected === 1);
-      if (els.discInd) els.discInd.classList.toggle('active', disc);
-
-      // FFW indicator (requested behavior)
-      const rec = Number(state.frame?.framesReceivedLastFetch ?? 0);
-      const ffw = Number.isFinite(rec) && rec > 1;
-      if (els.ffwInd) els.ffwInd.classList.toggle('active', ffw);
-
-      // Header metrics
-      safeSetText(els.hdrTotal, (state.display.lagT || 0).toFixed(0));
-      safeSetText(els.hdrPed,   (state.display.lagP || 0).toFixed(0));
-      safeSetText(els.hdrBrg,   (state.display.lagB || 0).toFixed(0));
-      safeSetText(els.hdrDsh,   (state.display.lagD || 0).toFixed(0));
-
-      if (state.currentTab === 'tab-racing') renderRacing();
-      else if (state.currentTab === 'tab-lag') renderLag();
-      else if (state.currentTab === 'tab-signals') renderSignals();
-      else if (state.currentTab === 'tab-telemetry') renderTelemetry();
-    }
-
-    function renderRacing() {
-      drawDualGauge(ctxGas, "GAS", state.display.gasP, state.display.gasL);
-      drawDualGauge(ctxClutch, "CLUTCH", state.display.clP, state.display.clL);
-
-      safeSetText(els.lblGasPhys, state.display.gasP.toFixed(0) + "%");
-      safeSetText(els.lblGasLog,  state.display.gasL.toFixed(0) + "%");
-      safeSetText(els.lblClutchPhys, state.display.clP.toFixed(0) + "%");
-      safeSetText(els.lblClutchLog,  state.display.clL.toFixed(0) + "%");
-
-      const f = state.frame || {};
-      toggleChip(els.stDrift,  f.gas_alert_triggered, 'active-red');
-      toggleChip(els.stNoise,  f.clutch_alert_triggered, 'active-amber');
-      toggleChip(els.stAuto,   f.gas_auto_adjust_applied, 'active-blue');
-      toggleChip(els.stRacing, f.isRacing, 'active-green');
-    }
-
-    function renderLag() {
-      safeSetText(els.cardTotal, (state.display.lagT||0).toFixed(0) + " ms");
-      safeSetText(els.cardPed,   (state.display.lagP||0).toFixed(0) + " ms");
-      safeSetText(els.cardBrg,   (state.display.lagB||0).toFixed(0) + " ms");
-      safeSetText(els.cardDsh,   (state.display.lagD||0).toFixed(0) + " ms");
-
-      safeSetText(els.avgTotal, `Avg: ${state.avgLagT.toFixed(1)}`);
-      safeSetText(els.avgPed,   `Avg: ${state.avgLagP.toFixed(1)}`);
-      safeSetText(els.avgBrg,   `Avg: ${state.avgLagB.toFixed(1)}`);
-      safeSetText(els.avgDsh,   `Avg: ${state.avgLagD.toFixed(1)}`);
-
-      resizeCanvas(els.cvsLag);
-      drawHistoryChart(ctxLag, state.lagHistory, ['total', 'brg', 'dash', 'ped'],
-        ['#ff3333', '#39ff14', '#ff00ff', '#00f3ff'], 0, null, true);
-    }
-
-    function renderSignals() {
-      resizeCanvas(els.cvsWaveGas);
-      resizeCanvas(els.cvsWaveClutch);
-      drawHistoryChart(ctxWaveGas, state.pedalHistory, ['gasP'], ['#00f3ff'], 0, 100, false);
-      drawHistoryChart(ctxWaveClutch, state.pedalHistory, ['clP'], ['#39ff14'], 0, 100, false);
-    }
-
-    function renderTelemetry() {
-      const f = state.frame || {};
-      Object.keys(TELE_DEFS).forEach(k => {
-        let val = f[k];
-
-        // keep framesReceivedLastFetch numeric (for warn-red)
-        const isFramesRx = (k === 'framesReceivedLastFetch');
-        const rawNum = typeof val === 'number' ? val : (val !== undefined ? Number(val) : NaN);
-
-        if (typeof val === 'number') val = (val % 1 === 0) ? val : val.toFixed(1);
-        if (val === undefined) val = "--";
-
-        const el = document.getElementById(`tele-${k}`);
-        if (el) {
-          el.textContent = val;
-          if (isFramesRx) {
-            const bad = Number.isFinite(rawNum) ? (rawNum !== 1) : false;
-            el.classList.toggle('warn-red', bad);
-          }
-        }
-      });
-    }
-
-    /**
-     * 9. TELEMETRY UI BUILD
-     */
-    function initTelemetryUI() {
-      const container = document.getElementById('tele-container');
-      if (!container) return;
-      container.innerHTML = '';
-
-      TELE_GROUPS.forEach(group => {
-        const groupDiv = document.createElement('div');
-        groupDiv.className = 'tele-group';
-
-        const header = document.createElement('div');
-        header.className = 'tele-group-header';
-        header.textContent = group.title;
-        groupDiv.appendChild(header);
-
-        const gridDiv = document.createElement('div');
-        gridDiv.className = 'tele-grid-section';
-
-        group.keys.forEach(key => {
-          const def = TELE_DEFS[key] || { label: key, short: key, long: "" };
-          const card = document.createElement('div');
-          card.className = 'tele-card';
-          card.innerHTML = `<h5>${def.label}</h5><div class="tele-val" id="tele-${key}">--</div>`;
-
-          card.onmouseenter = (e) => showHoverTip(e, def.short);
-          card.onmousemove = (e) => moveHoverTip(e);
-          card.onmouseleave = () => hideHoverTip();
-
-          card.onclick = () => {
-            const title = document.getElementById('modal-title');
-            const desc  = document.getElementById('modal-desc');
-            const overlay = document.getElementById('modal-overlay');
-            if (title) title.textContent = def.label;
-            if (desc)  desc.textContent = def.long || "";
-            if (overlay) overlay.classList.add('open');
-          };
-
-          gridDiv.appendChild(card);
-        });
-
-        groupDiv.appendChild(gridDiv);
-        container.appendChild(groupDiv);
-      });
-    }
-
-    function showHoverTip(e, txt) {
-      const t = document.getElementById('hover-tip');
-      if (!t) return;
-      t.textContent = txt;
-      t.classList.add('visible');
-      moveHoverTip(e);
-    }
-
-    function moveHoverTip(e) {
-      const t = document.getElementById('hover-tip');
-      if (!t) return;
-      t.style.left = (e.clientX + 15) + 'px';
-      t.style.top  = (e.clientY + 15) + 'px';
-    }
-
-    function hideHoverTip() {
-      const t = document.getElementById('hover-tip');
-      if (t) t.classList.remove('visible');
-    }
-
-    function closeModal() {
-      const overlay = document.getElementById('modal-overlay');
-      if (overlay) overlay.classList.remove('open');
-    }
-
-    /**
-     * 10. INITIALIZATION
-     */
-    window.onload = function() {
-      // Cache DOM
-      els = {
-        brandStatus: document.getElementById('session-status'),
-        discInd: document.getElementById('disc-indicator'),
-        ffwInd: document.getElementById('ffw-indicator'),
-        hdrTotal: document.getElementById('hdr-total-lag'),
-        hdrPed: document.getElementById('hdr-ped-lag'),
-        hdrBrg: document.getElementById('hdr-brg-lag'),
-        hdrDsh: document.getElementById('hdr-dsh-lag'),
-
-        cvsGas: document.getElementById('canvas-gas'),
-        cvsClutch: document.getElementById('canvas-clutch'),
-        lblGasPhys: document.getElementById('lbl-gas-phys'),
-        lblGasLog: document.getElementById('lbl-gas-log'),
-        lblClutchPhys: document.getElementById('lbl-clutch-phys'),
-        lblClutchLog: document.getElementById('lbl-clutch-log'),
-
-        stDrift: document.getElementById('status-drift'),
-        stNoise: document.getElementById('status-noise'),
-        stAuto: document.getElementById('status-auto'),
-        stRacing: document.getElementById('status-racing'),
-
-        tickerList: document.getElementById('ticker-list'),
-
-        cardTotal: document.getElementById('card-total-lag'),
-        cardPed: document.getElementById('card-ped-lag'),
-        cardBrg: document.getElementById('card-brg-lag'),
-        cardDsh: document.getElementById('card-dsh-lag'),
-        avgTotal: document.getElementById('avg-total-lag'),
-        avgPed: document.getElementById('avg-ped-lag'),
-        avgBrg: document.getElementById('avg-brg-lag'),
-        avgDsh: document.getElementById('avg-dsh-lag'),
-
-        cvsLag: document.getElementById('canvas-lag-chart'),
-        cvsWaveGas: document.getElementById('canvas-wave-gas'),
-        cvsWaveClutch: document.getElementById('canvas-wave-clutch'),
-
-        fullEventList: document.getElementById('full-event-list')
-      };
-
-      ctxGas = els.cvsGas ? els.cvsGas.getContext('2d') : null;
-      ctxClutch = els.cvsClutch ? els.cvsClutch.getContext('2d') : null;
-      ctxLag = els.cvsLag ? els.cvsLag.getContext('2d') : null;
-      ctxWaveGas = els.cvsWaveGas ? els.cvsWaveGas.getContext('2d') : null;
-      ctxWaveClutch = els.cvsWaveClutch ? els.cvsWaveClutch.getContext('2d') : null;
-
-      initTelemetryUI();
-      logEvent("System", "Initializing Dashboard...");
-      renderLoop();
-      dataLoop();
-    };
-
-    // Expose functions for inline HTML onclick handlers (robust across environments)
-    window.switchTab = switchTab;
-    window.updateConfig = updateConfig;
-    window.exportLogs = exportLogs;
-    window.closeModal = closeModal;
-  </script>
-</body>
-</html>
-
-```
+**Deliverable:**
+* A **single, self-contained HTML file** (`index.html`) containing all HTML, CSS, and JavaScript.
+* **No** external libraries, frameworks, or network calls.
+* The code must be production-ready, bug-free, and optimized for performance.
+### **1. Visual Design & Theme**
+* **Style:** Retro-Arcade meets Modern Telemetry (Cyberpunk aesthetic).
+* **Colors:** Dark background (`#050508`), Dark panels (`#0f0f16`).
+* **Accents:** Neon Cyan, Lime Green, Magenta, Amber, and Red.
+* **Typography:** High-contrast sans-serif. Use **massive** font sizes for key numeric readouts (optimized for a small 10" monitor viewed from a distance).
+* **Layout:** Fixed header, Tab navigation bar, and a main content area that fills the remaining viewport.
+### **2. Technical Constraints & Simulation Engine**
+* **Simulation Loop:**
+    * Implement a `updateSimulation()` function that runs exactly every **50ms** (define this as a `const` at the top of the JS).
+    * Simulate **Gas** and **Clutch** pedals using sine waves with added random noise/jitter to look human.
+    * Simulate **Latency (Lag)** metrics (Pedal, Bridge, Dash, Total) using a random walk algorithm.
+    * Maintain history arrays (max 300 samples) for all metrics.
+    * Calculate **3-second running averages** for all lag metrics.
+* **Rendering Loop:** Use `requestAnimationFrame` for smooth UI updates (60fps), independent of the data update rate.
+* **CSS Grid/Canvas Fix:** When placing `<canvas>` elements inside CSS Grids, ensure containers have `overflow: hidden` and `min-height: 0` to prevent infinite layout expansion bugs.
+### **3. UI Structure & Tabs**
+#### **Global Header (Always Visible)**
+* **Left:** Branding ("PedDash").
+* **Center:** A **"FFW" (Fast Forward)** indicator pill. It should randomly toggle on/off (glowing Amber) based on simulation state.
+* **Right:** Compact summary of Total Lag (ms) and breakdown (Ped/Bridge/Dash).
+#### **Tab 1: "Racing" (Main View)**
+* **Gauges:** Two large **Dual-Ring Gauges** (Gas & Clutch).
+    * **Outer Ring:** Physical sensor value (Raw).
+    * **Inner Ring:** Logical game value (Processed).
+    * **Center Text:** The Logical value (0-100). **Font size must be huge.**
+    * **Colors:** White at 0%, Green 1-99%, Red at 100%.
+* **Labels:** Beneath gauges, show "PHYS" and "LOG" values. If values change, briefly flash the text Cyan.
+* **Status Strip:** Row of "Chips" (Drift, Noise, Estimator) that light up based on random simulation events.
+#### **Tab 2: "Lag & Timing"**
+* **Layout:** CSS Grid. Top row = Metrics, Bottom row = Chart.
+* **Metrics Panel:** Display current ms and **Avg 3s** for Total, PedMon, Bridge, and Dash latencies.
+* **Chart:** A multi-line historical chart.
+    * **Important:** Limit chart height to **35vh** (do not let it fill the screen).
+    * X-Axis: Time labels (e.g., "-15s", "Now").
+    * Y-Axis: Dynamic scaling based on max lag.
+#### **Tab 3: "Signals & Events"**
+* **Layout:** Split view. Top 30% = Charts, Bottom = Event Log.
+* **Charts:** Two separate historical line charts (Gas vs. Time, Clutch vs. Time).
+    * **Y-Axis:** Fixed scale **0 to 100**.
+    * **X-Axis:** Time history.
+* **Event Log:** A scrolling list of simulated events (e.g., "Gas Drift Detected", "FFW Active") with timestamps.
+#### **Tab 4: "Data Map" (Telemetry Grid)**
+* **Layout:** A categorized Grid layout (Categories: "Pedal Inputs", "Latency Metrics", "System Status").
+* **Cards:** Inside categories, display value cards using a responsive grid (auto-fill).
+* **Interactivity:**
+    * **Hover:** Show a small "Quick Tip" floating tooltip near the cursor.
+    * **Click:** Open a central **Modal/Popup** explaining the metric in plain English (e.g., explaining what "Logical vs Physical" means).
+# More design ideas
+
+You are a senior front-end engineer and UI designer.
+Your task is to build a single, self-contained HTML file that prototypes an “arcade-style pedal dashboard” for sim racing.
+
+This is only a visual / behavior prototype. There is no real telemetry: all data must be simulated in JavaScript.
+
+Deliverable
+
+Output one complete HTML document:
+
+<html>, <head>, <style>, <body>, <script> all in a single file.
+
+
+No external build tools.
+
+No external JS frameworks.
+
+No external CSS frameworks.
+
+No network calls.
+
+It must run by simply opening it in a browser (e.g. MS Edge / Chrome) as a local HTML file.
+
+Overall look & feel
+
+Design goal: it should feel like a retro-arcade + modern telemetry dashboard:
+
+Dark theme, high contrast.
+
+Background: very dark (e.g. near-black or deep blue).
+
+Use neon-like accent colors: cyan, lime green, magenta, amber.
+
+Rounded cards, soft glows, subtle shadows.
+
+All text readable on a small 10.1" secondary monitor at 1366×768 (assume it might be driven at 1080p but physically small).
+
+Typography:
+
+Big numeric readouts for key values.
+
+Smaller but still readable labels.
+
+Layout & tabs
+
+Use a tabbed UI so we can fit everything on the small monitor.
+
+3.1 Global layout
+
+Inside <body>:
+
+A full-screen container (max 1366×768, centered if possible).
+
+At the very top, a fixed global header strip (always visible) with:
+
+Left: small status labels, e.g.
+
+PedDash Arcade Prototype
+
+Simulated session
+
+Center: FFW (fast-forward) indicator area (details in section 4).
+
+Right: compact lag summary:
+
+Total lag: XXX ms
+
+And smaller text below: PedMon: A ms | Bridge: B ms | Dash: C ms (all simulated).
+
+Below header:
+
+A tab bar with 3 tabs:
+
+Tab 1: Racing
+
+Tab 2: Lag & Timing
+
+Tab 3: Signals & Events
+
+Below tab bar:
+
+The tab content area, filling the rest of the viewport.
+
+3.2 Tab behavior
+
+Only one tab’s content is visible at a time.
+
+When a tab is not active:
+
+Do not update its DOM / canvases on every frame.
+
+The underlying data model can keep updating, but drawing should happen only for the active tab.
+
+On tab switch:
+
+Perform a full render of that tab using the latest data buffers.
+
+FFW indicator (catch-up mode visual)
+
+Even though this prototype uses simulated data, implement a visual FFW indicator that can be triggered from the simulation.
+
+Place it in the global header center.
+
+Normal state: hidden.
+
+FFW state:
+
+Show a pill/label like: ⏩ FFW (catching up) or similar.
+
+Use a bright color (e.g. amber or yellow) with a subtle glow.
+
+Optional: very subtle CSS animation (e.g. pulsing opacity or animated stripes) to imply fast-forward.
+
+The simulation should randomly or deterministically toggle a ffwActive boolean so the UI can show/hide this indicator.
+
+Tab 1 – “Racing” (main view while driving)
+
+This is the primary “arcade” view. Prioritize clarity and eye candy here.
+
+5.1 Dual ring gauges: Gas & Clutch
+
+Top row: two large dual-ring gauges, side by side:
+
+Left gauge: Gas
+
+Right gauge: Clutch
+
+Each gauge shows both physical and logical pedal travel:
+
+Range: 0–100% for both.
+
+Outer ring: physical travel (what the pedal sensor physically reads).
+
+Inner ring: logical / in-game percentage after deadzones, etc.
+
+Center text: the logical percentage (0–100).
+
+Color rules for the big center number:
+
+0% → bright white.
+
+1–99% → bright green.
+
+100% → bright red.
+
+The rings themselves can use related colors (e.g. softer versions of green/red) but must be visually clear which ring is physical vs logical. Include a small legend or labels (“PHYS” / “LOG”).
+
+Implementation hint:
+
+Use <canvas> and draw arcs for the rings, or
+
+Use SVG arcs, or
+
+Use pure CSS with conic gradients if you prefer.
+
+Animate smoothly (ease between old and new values rather than hard jumps).
+
+5.2 Numeric labels
+
+Below each gauge, show small labels:
+
+For Gas:
+
+Physical: XX%
+
+Logical: YY%
+
+For Clutch:
+
+Same structure.
+
+If value changed compared to the previous frame, briefly highlight the text in a “changed” color (e.g. bright cyan) for a short time (like < 500ms).
+
+5.3 Mini status strip
+
+Under the gauges, add a horizontal status row with small “chips”:
+
+Gas drift indicator light (simulated):
+
+Off most of the time.
+
+Occasionally turn on (e.g. red or amber) for a brief period when the simulation triggers a “gas alert”.
+
+Clutch noise / Rudder indicator.
+
+Estimator indicator (e.g. when simulated “auto-adjust” happens).
+
+These are just boolean-ish indicators driven by your simulated data.
+
+5.4 Tiny event ticker
+
+At the bottom of this tab, add a small event ticker:
+
+Example entries:
+
+12:34:56 Gas 85%
+
+12:34:59 Rudder noise
+
+12:35:03 Controller disconnected
+
+Use a simple scrolling or “most recent on top” layout.
+
+This is purely local, based on simulated events.
+
+Tab 2 – “Lag & Timing”
+
+Even though there’s no real network or C program here, we want to simulate latency metrics and show them graphically.
+
+6.1 Numeric summary
+
+At the top of this tab, show a panel with current (simulated) values:
+
+Total lag: XXX ms
+
+PedMon lag: AAA ms
+
+Bridge lag: BBB ms
+
+Dash lag: CCC ms
+
+Below, maybe smaller text for running averages over last N seconds (all simulated).
+
+6.2 Lag “oscilloscope” graphs
+
+Below the numeric summary, show graphs over time:
+
+Either 4 separate mini line charts or 1 chart with 4 colored lines:
+
+Total lag (ms)
+
+PedMon lag (ms)
+
+Bridge lag (ms)
+
+Dash lag (ms)
+
+X-axis: recent time window (e.g. last 20–30 seconds).
+
+Y-axis: lag in milliseconds (auto scale, but keep it reasonable, e.g. up to ~250 ms).
+
+Implementation hints:
+
+Use <canvas> for charts (simple 2D line plotting).
+
+Data source: a rolling array of simulated lag samples.
+
+Use different line colors and a legend.
+
+Only update/draw these charts while the Lag & Timing tab is active.
+
+Tab 3 – “Signals & Events”
+
+This tab focuses on raw pedal signals and a more detailed event log.
+
+7.1 Gas & Clutch waveforms
+
+Top section: two mini waveform charts:
+
+One for Gas physical % over time.
+
+One for Clutch physical % over time.
+
+Vertical range: 0–100%.
+
+Time axis: last N seconds (similar to lag charts).
+
+Implementation:
+
+Again, <canvas> with simple polyline drawing.
+
+Use a smooth, continuous scroll effect (e.g. shift the data or redraw with a moving index).
+
+7.2 Detailed event list
+
+Below the waveforms, show a scrollable list/table of simulated events:
+
+Columns example:
+
+Time (e.g. 12:34:56).
+
+Type (e.g. Gas alert, Rudder noise, Disconnect, Reconnect).
+
+Details (e.g. Gas reached 87%, or Estimator adjusted threshold).
+
+If you want extra polish: clicking an event can briefly highlight the relevant region in the waveform (optional).
+
+Telemetry simulation (JS)
+
+You must implement a client-side simulation of telemetry and events.
+
+8.1 Core state
+
+Create a JS object that holds the live state, for example:
+
+const state = {
+gasPhysical: 0,   // 0..100
+gasLogical: 0,    // 0..100
+clutchPhysical: 0,
+clutchLogical: 0,
+
+// Simulated lags in ms:
+lagPedMon: 0,
+lagBridge: 0,
+lagDash: 0,
+lagTotal: 0,
+
+ffwActive: false,
+
+// Arrays for history:
+lagHistory: [],         // objects with { time, pedMon, bridge, dash, total }
+gasHistory: [],         // objects with { time, physical, logical }
+clutchHistory: [],      // same
+events: []              // objects with { time, type, message }
+};
+
+You can adjust the exact structure as needed, but keep a clear separation of:
+
+pedal percentages,
+
+lag metrics,
+
+recent event history.
+
+8.2 Update loop
+
+Use setInterval or requestAnimationFrame (with your own timing) to:
+
+Update state.gasPhysical and state.clutchPhysical smoothly:
+
+Use sine waves, easing, or “random walk” style so it looks like a human pressing pedals, not pure noise.
+
+Compute gasLogical and clutchLogical from the physical ones:
+
+For example, clamp & scale to simulate deadzones (e.g. values below 5% become 0, values above 95% become 100).
+
+Simulate lag metrics:
+
+lagPedMon ~ random in [5, 25] ms.
+
+lagBridge ~ random in [10, 60] ms.
+
+lagDash ~ random in [5, 40] ms.
+
+lagTotal = lagPedMon + lagBridge + lagDash.
+
+Occasionally trigger:
+
+ffwActive = true for a short period, then back to false.
+
+Events like “Gas alert”, “Rudder noise”, “Controller disconnected”, “Controller reconnected”.
+
+Push samples to history arrays and trim to a reasonable length (e.g. last 300 points).
+
+The update loop should also:
+
+Recompute the lag numeric summary.
+
+Notify the currently active tab to redraw its content.
+
+Performance & CPU friendliness
+
+Even though this is a prototype, make it reasonably efficient:
+
+Use at most one main update loop for data.
+
+Only draw/animate the active tab.
+
+For hidden tabs:
+
+Keep updating history data in state, but don’t constantly redraw their canvases.
+
+Keep canvas sizes bounded to the visible area; no huge offscreen canvases.
+
+Code organization & comments
+
+Keep everything in the single HTML file.
+
+Organize code in logical sections:
+
+CSS styles.
+
+HTML structure.
+
+JS: state definition, simulation, rendering per tab, event handlers.
+
+Add comments:
+
+Short, human-friendly comments for non-obvious parts (e.g. how the dual-ring gauge drawing works).
+
+No need for over-commenting basic HTML/JS.
+
+Interaction summary
+
+When the HTML file is opened:
+
+Simulation starts automatically.
+
+“Racing” tab is active by default.
+
+User should be able to:
+
+Switch tabs via the tab bar.
+
+Observe gauges and charts updating live.
+
+Occasionally see the FFW indicator light up.
+
+See random events appear in the ticker / event list.
+
+Important:
+Focus purely on this visual & interactive prototype.
+Do not implement any real network calls or hooks to external processes. All data must be generated on the client with JavaScript.
