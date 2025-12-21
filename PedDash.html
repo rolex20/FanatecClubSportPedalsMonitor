@@ -1,0 +1,1573 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PedDash Arcade - Production v19</title>
+  <style>
+    :root {
+      --bg-color: #050508;
+      --panel-bg: #0f0f16;
+      --text-main: #e0e0e0;
+      --text-muted: #777;
+      --neon-cyan: #00f3ff;
+      --neon-green: #39ff14;
+      --neon-magenta: #ff00ff;
+      --neon-amber: #ffbf00;
+      --neon-red: #ff3333;
+      --header-height: 70px;
+      --tab-height: 45px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0; padding: 0;
+      background-color: var(--bg-color);
+      color: var(--text-main);
+      font-family: "Segoe UI", Tahoma, sans-serif;
+      overflow: hidden;
+      width: 100vw; height: 100vh;
+      display: flex; flex-direction: column;
+      user-select: none;
+    }
+
+    /* Utility text colors (restored) */
+    .txt-white { color: #fff; }
+    .txt-green { color: var(--neon-green); }
+    .txt-red { color: var(--neon-red); }
+    .txt-cyan { color: var(--neon-cyan); }
+    .txt-mag { color: var(--neon-magenta); }
+    .txt-amb { color: var(--neon-amber); }
+
+    /* --- Header --- */
+    header {
+      height: var(--header-height);
+      background: linear-gradient(to bottom, #1a1a24, #0f0f16);
+      border-bottom: 1px solid #333;
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 0 20px; flex-shrink: 0;
+    }
+
+    .brand { font-weight: bold; letter-spacing: 1px; color: var(--neon-cyan); font-size: 1.2em; text-shadow: 0 0 5px rgba(0, 243, 255, 0.4); }
+    .brand span { font-size: 0.7em; color: var(--text-muted); font-weight: normal; margin-left: 10px; }
+
+    .center-status { width: 300px; text-align: center; }
+    .pill { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 0.85em; font-weight: bold; opacity: 0; transition: opacity 0.2s; margin: 0 5px; }
+    .pill.active { opacity: 1; animation: pulse 2s infinite; }
+    .pill-ffw { background: rgba(255, 191, 0, 0.1); color: var(--neon-amber); border: 1px solid var(--neon-amber); box-shadow: 0 0 10px rgba(255,191,0,0.25); }
+    .pill-disc { background: rgba(255, 51, 51, 0.1); color: var(--neon-red); border: 1px solid var(--neon-red); box-shadow: 0 0 10px rgba(255,51,51,0.25); }
+
+    @keyframes pulse { 0% { box-shadow: 0 0 5px currentColor; } 50% { box-shadow: 0 0 15px currentColor; } 100% { box-shadow: 0 0 5px currentColor; } }
+
+    .lag-summary { text-align: right; font-family: monospace; display: flex; flex-direction: column; justify-content: center; }
+    .lag-main { font-size: 1.6em; color: var(--text-main); font-weight: bold; line-height: 1.1; }
+    .lag-details { font-size: 1.1em; color: var(--text-muted); margin-top: 2px; }
+
+    /* --- Navigation --- */
+    nav { height: var(--tab-height); background-color: #0f0f16; display: flex; border-bottom: 1px solid #333; flex-shrink: 0; }
+    .tab-btn { background: transparent; border: none; color: var(--text-muted); padding: 0 25px; font-size: 1em; cursor: pointer; border-right: 1px solid #222; transition: all 0.2s; }
+    .tab-btn:hover { color: #fff; background: #161620; }
+    .tab-btn.active { color: var(--neon-cyan); background: #1a1a24; box-shadow: inset 0 -3px 0 var(--neon-cyan); }
+
+    /* --- Main Content --- */
+    main { flex-grow: 1; position: relative; overflow: hidden; padding: 15px; }
+    .tab-content { display: none; height: 100%; width: 100%; flex-direction: column; }
+    .tab-content.active { display: flex; }
+
+    /* --- Racing Tab --- */
+    .gauges-container { display: flex; justify-content: center; align-items: center; gap: 60px; flex-grow: 1; padding-bottom: 20px; }
+    .gauge-wrapper { display: flex; flex-direction: column; align-items: center; width: 320px; }
+    .gauge-canvas { margin-bottom: 15px; }
+    .gauge-labels { display: flex; justify-content: space-between; width: 100%; font-family: monospace; font-size: 1.8em; color: var(--text-muted); font-weight: bold; }
+    .status-strip { display: flex; justify-content: center; gap: 15px; padding: 10px; background: #0f0f16; border-radius: 8px; border: 1px solid #333; margin-bottom: 15px; flex-shrink: 0; }
+    .status-chip { padding: 5px 15px; border-radius: 4px; font-size: 0.9em; font-weight: bold; background: #222; color: #555; text-transform: uppercase; transition: all 0.2s; }
+    .status-chip.active-red { background: rgba(255, 51, 51, 0.2); color: var(--neon-red); box-shadow: 0 0 8px var(--neon-red); border: 1px solid var(--neon-red); }
+    .status-chip.active-amber { background: rgba(255, 191, 0, 0.2); color: var(--neon-amber); box-shadow: 0 0 8px var(--neon-amber); border: 1px solid var(--neon-amber); }
+    .status-chip.active-blue { background: rgba(0, 243, 255, 0.2); color: var(--neon-cyan); box-shadow: 0 0 8px var(--neon-cyan); border: 1px solid var(--neon-cyan); }
+    .status-chip.active-green { background: rgba(57, 255, 20, 0.2); color: var(--neon-green); box-shadow: 0 0 8px var(--neon-green); border: 1px solid var(--neon-green); }
+    .ticker-container { height: 100px; background: #000; border: 1px solid #333; border-radius: 4px; padding: 10px; overflow-y: hidden; font-family: monospace; font-size: 1em; flex-shrink: 0; }
+    /* FIX: newest-first on Racing ticker (match Signals tab) */
+    .ticker-list { display: flex; flex-direction: column; }
+    .ticker-item { margin-bottom: 4px; border-bottom: 1px solid #222; padding-bottom: 2px; }
+    .ticker-time { color: var(--text-muted); margin-right: 10px; }
+
+    /* --- Lag Tab --- */
+    .lag-panel { display: grid; grid-template-rows: max-content 35vh; align-content: start; height: 100%; gap: 20px; }
+    .lag-metrics-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; }
+    .metric-card { background: #0f0f16; border: 1px solid #333; border-radius: 8px; padding: 15px; text-align: center; }
+    .metric-card h3 { margin: 0 0 5px 0; font-size: 1em; color: var(--text-muted); }
+    .metric-card .value { font-size: 1.8em; font-weight: bold; font-family: monospace; }
+    .metric-avg { font-size: 0.8em; color: #555; margin-top: 5px; font-family: monospace; }
+    .chart-container { background: #0f0f16; border: 1px solid #333; border-radius: 8px; padding: 15px; position: relative; overflow: hidden; }
+
+    /* --- Signals Tab --- */
+    .signals-layout { display: grid; grid-template-rows: 30vh 1fr; gap: 20px; height: 100%; }
+    .waveforms-row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; min-height: 0; }
+    .waveform-card { background: #0f0f16; border: 1px solid #333; border-radius: 8px; padding: 10px; display: flex; flex-direction: column; position: relative; overflow: hidden; min-height: 0; }
+    .waveform-card h4 { margin: 0 0 10px 0; color: var(--text-muted); font-size: 1.1em; flex-shrink: 0; }
+    .events-table-container { background: #0f0f16; border: 1px solid #333; border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
+    /* Wider last column to host two export buttons */
+    .events-header { background: #1a1a24; padding: 10px; display: grid; grid-template-columns: 100px 150px 1fr 280px; font-weight: bold; font-size: 1em; border-bottom: 1px solid #333; flex-shrink: 0; align-items: center; }
+    .events-list { overflow-y: auto; flex-grow: 1; font-family: monospace; font-size: 1em; }
+    .event-row { display: grid; grid-template-columns: 100px 150px 1fr 280px; padding: 6px 10px; border-bottom: 1px solid #222; }
+    .event-row:hover { background-color: #1a1a24; }
+    .btn-export { background: #222; border: 1px solid #555; color: #fff; padding: 6px 12px; cursor: pointer; border-radius: 4px; font-size: 0.85em; }
+    .btn-export:hover { background: #333; border-color: var(--neon-cyan); }
+
+    /* --- Telemetry Map --- */
+    .tele-container { height: 100%; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 30px; }
+    .tele-group { display: flex; flex-direction: column; }
+    .tele-group-header { color: var(--neon-cyan); border-bottom: 1px solid #333; padding-bottom: 5px; margin-bottom: 15px; font-size: 1.1em; text-transform: uppercase; font-weight: bold; }
+    .tele-grid-section { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 15px; }
+    .tele-card { background: #161620; border: 1px solid #333; border-radius: 6px; padding: 15px; cursor: pointer; transition: all 0.2s; }
+    .tele-card:hover { border-color: var(--neon-cyan); background: #1a1a24; transform: translateY(-2px); }
+    .tele-card h5 { margin: 0 0 5px 0; color: var(--text-muted); font-size: 0.85em; text-transform: uppercase; }
+    .tele-card .tele-val { font-size: 1.4em; font-family: monospace; font-weight: bold; color: #fff; word-break: break-all; }
+    .tele-val.warn-red { color: var(--neon-red); text-shadow: 0 0 5px var(--neon-red); }
+
+    /* --- Config Tab --- */
+    .config-panel { padding: 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 40px; overflow-y: auto; }
+    .config-group { background: #161620; border: 1px solid #333; border-radius: 8px; padding: 20px; }
+    .config-group h3 { margin-top: 0; color: var(--neon-cyan); border-bottom: 1px solid #444; padding-bottom: 10px; }
+    .form-row { margin-bottom: 15px; display: flex; flex-direction: column; }
+    .form-row label { color: #aaa; font-size: 0.9em; margin-bottom: 5px; }
+    .form-row input, .form-row select { background: #000; border: 1px solid #444; color: #fff; padding: 10px; font-family: monospace; font-size: 1em; }
+    .form-row input[type="checkbox"] { width: 22px; height: 22px; cursor: pointer; }
+    .row-inline { flex-direction: row; align-items: center; gap: 12px; }
+
+    /* --- Modals/Tips (DOM restored) --- */
+    .hover-tip { position: fixed; background: rgba(0,0,0,0.95); border: 1px solid var(--neon-cyan); color: var(--neon-cyan); padding: 8px 12px; border-radius: 4px; font-size: 0.85em; pointer-events: none; z-index: 1000; opacity: 0; transition: opacity 0.1s; transform: translateY(-100%); margin-top: -10px; }
+    .hover-tip.visible { opacity: 1; }
+    .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 2000; display: flex; justify-content: center; align-items: center; opacity: 0; pointer-events: none; transition: opacity 0.2s; }
+    .modal-overlay.open { opacity: 1; pointer-events: auto; }
+    .modal-card { background: #1a1a24; border: 1px solid var(--neon-cyan); box-shadow: 0 0 30px rgba(0, 243, 255, 0.3); width: 550px; max-width: 90%; padding: 25px; border-radius: 12px; position: relative; }
+    .modal-card h2 { margin-top: 0; color: var(--neon-cyan); border-bottom: 1px solid #333; padding-bottom: 10px; }
+    .modal-card p { color: #e0e0e0; line-height: 1.6; font-size: 1.05em; }
+    .modal-close { position: absolute; top: 15px; right: 15px; background: none; border: none; color: #777; font-size: 2em; cursor: pointer; line-height: 1; }
+    .modal-close:hover { color: #fff; }
+
+    /* --- Error Handling UI --- */
+    #global-error { position: fixed; bottom: 0; left: 0; width: 100%; background: #c00; color: #fff; padding: 15px; font-family: monospace; font-size: 12px; z-index: 9999; display: none; white-space: pre-wrap; overflow-y: auto; max-height: 200px; border-top: 2px solid #fff; }
+
+    canvas { display: block; width: 100%; height: 100%; }
+  </style>
+
+  <script>
+    // --- 0. EMERGENCY ERROR BOX ---
+    window.onerror = function(msg, url, line, col, error) {
+      const box = document.getElementById('global-error');
+      if (box) {
+        box.style.display = 'block';
+        box.textContent += `[JS ERROR] ${msg}\nLine: ${line}, Col: ${col}\n${error ? error.stack : ''}\n\n`;
+      }
+      return false;
+    };
+  </script>
+</head>
+
+<body>
+  <div id="global-error"></div>
+
+  <header>
+    <div class="brand">PedDash <span id="session-status">Telemetry Arcade</span></div>
+    <div class="center-status">
+      <div id="disc-indicator" class="pill pill-disc">⚠ DISCONNECTED</div>
+      <div id="ffw-indicator" class="pill pill-ffw">⏩ FFW CATCH-UP</div>
+    </div>
+    <div class="lag-summary">
+      <div class="lag-main">Latency: <span id="hdr-total-lag" class="txt-red">--</span> ms</div>
+      <div class="lag-details">
+        Ped: <span id="hdr-ped-lag">00</span> | Brg: <span id="hdr-brg-lag">00</span> | Dsh: <span id="hdr-dsh-lag">00</span>
+      </div>
+    </div>
+  </header>
+
+  <nav>
+    <button class="tab-btn active" id="btn-racing" onclick="switchTab('tab-racing')">Racing</button>
+    <button class="tab-btn" id="btn-lag" onclick="switchTab('tab-lag')">Lag & Timing</button>
+    <button class="tab-btn" id="btn-signals" onclick="switchTab('tab-signals')">Signals & Events</button>
+    <button class="tab-btn" id="btn-telemetry" onclick="switchTab('tab-telemetry')">Data Map</button>
+    <button class="tab-btn" id="btn-config" onclick="switchTab('tab-config')">Configuration</button>
+  </nav>
+
+  <main>
+    <!-- Tab 1: Racing -->
+    <div id="tab-racing" class="tab-content active">
+      <div class="gauges-container">
+        <div class="gauge-wrapper">
+          <canvas id="canvas-gas" width="300" height="300" class="gauge-canvas"></canvas>
+          <div class="gauge-labels">
+            <span>PHYS: <span id="lbl-gas-phys">0%</span></span>
+            <span>GAME: <span id="lbl-gas-log">0%</span></span>
+          </div>
+        </div>
+        <div class="gauge-wrapper">
+          <canvas id="canvas-clutch" width="300" height="300" class="gauge-canvas"></canvas>
+          <div class="gauge-labels">
+            <span>PHYS: <span id="lbl-clutch-phys">0%</span></span>
+            <span>GAME: <span id="lbl-clutch-log">0%</span></span>
+          </div>
+        </div>
+      </div>
+      <div class="status-strip">
+        <div id="status-drift" class="status-chip">Drift Alert</div>
+        <div id="status-noise" class="status-chip">Rudder Noise</div>
+        <div id="status-auto" class="status-chip">Auto-Adjust</div>
+        <div id="status-racing" class="status-chip">Racing</div>
+      </div>
+      <div class="ticker-container"><div id="ticker-list" class="ticker-list"></div></div>
+    </div>
+
+    <!-- Tab 2: Lag -->
+    <div id="tab-lag" class="tab-content">
+      <div class="lag-panel">
+        <div class="lag-metrics-grid">
+          <div class="metric-card"><h3>Latency Total</h3><div class="value txt-red" id="card-total-lag">0 ms</div><div class="metric-avg" id="avg-total-lag">Avg: 0</div></div>
+          <div class="metric-card"><h3>PedMon (C)</h3><div class="value txt-cyan" id="card-ped-lag">0 ms</div><div class="metric-avg" id="avg-ped-lag">Avg: 0</div></div>
+          <div class="metric-card"><h3>Bridge (PS)</h3><div class="value txt-green" id="card-brg-lag">0 ms</div><div class="metric-avg" id="avg-brg-lag">Avg: 0</div></div>
+          <div class="metric-card"><h3>Dash (JS)</h3><div class="value txt-mag" id="card-dsh-lag">0 ms</div><div class="metric-avg" id="avg-dsh-lag">Avg: 0</div></div>
+        </div>
+        <div class="chart-container"><canvas id="canvas-lag-chart"></canvas></div>
+      </div>
+    </div>
+
+    <!-- Tab 3: Signals -->
+    <div id="tab-signals" class="tab-content">
+      <div class="signals-layout">
+        <div class="waveforms-row">
+          <div class="waveform-card"><h4>Gas Input History</h4><canvas id="canvas-wave-gas"></canvas></div>
+          <div class="waveform-card"><h4>Clutch Input History</h4><canvas id="canvas-wave-clutch"></canvas></div>
+        </div>
+        <div class="events-table-container">
+          <div class="events-header">
+            <div>Time</div><div>Type</div><div>Details</div>
+            <div style="display:flex; justify-content:flex-end; gap:10px;">
+              <button class="btn-export" onclick="exportLogs()">Export Events CSV</button>
+              <button class="btn-export" onclick="exportAlgoDebugCsv()">Export Algo Debug CSV</button>
+            </div>
+          </div>
+          <div id="full-event-list" class="events-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab 4: Telemetry -->
+    <div id="tab-telemetry" class="tab-content">
+      <div id="tele-container" class="tele-container"></div>
+    </div>
+
+    <!-- Tab 5: Configuration -->
+    <div id="tab-config" class="tab-content">
+      <div class="config-panel">
+        <div class="config-group">
+          <h3>Polling Control</h3>
+          <div class="form-row">
+            <label>Update Interval (ms) - Set 0 for Smart</label>
+            <input type="number" id="cfg-interval" value="50" onchange="updateConfig('UPDATE_INTERVAL_MS', this.value)">
+          </div>
+          <div class="form-row">
+            <label>Smart Algorithm Mode</label>
+            <select id="cfg-algo" onchange="updateConfig('ALGO_MODE', this.value)">
+              <option value="SMOOTH_CONVERGENCE" selected>SMOOTH_CONVERGENCE (Recommended)</option>
+              <option value="FRAME_LOCK">FRAME_LOCK</option>
+              <option value="ALGO_DIGITAL_PLL">ALGO_DIGITAL_PLL (ChatGPT)</option>
+              <option value="ALGO_INTEGRAL_FLOW">ALGO_INTEGRAL_FLOW</option>
+              <option value="ALGO_GROK_PI">ALGO_GROK_PI</option>
+              <option value="ALGO_DEEPSEEK_PI">ALGO_DEEPSEEK_PI</option>
+              <option value="ALGO_QWEN_HYSTERESIS">ALGO_QWEN_HYSTERESIS</option>
+              <option value="ALGO_CLAUDE_EWAP">ALGO_CLAUDE_EWAP</option>
+              <option value="ALGO_LEGACY">ALGO_LEGACY</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label>Manual Update Factor</label>
+            <input type="number" step="0.01" id="cfg-factor" value="1.00" onchange="updateConfig('MANUAL_UPDATE_FACTOR', this.value)">
+          </div>
+        </div>
+        <div class="config-group">
+          <h3>System & Debug</h3>
+          <div class="form-row row-inline"><input type="checkbox" id="cfg-bounds" checked onchange="updateConfig('USE_BOUNDS_CHECK', this.checked)"><label>Use Bounds Check</label></div>
+          <div class="form-row row-inline"><input type="checkbox" id="cfg-debug" checked onchange="updateConfig('ENABLE_ALGO_DEBUG', this.checked)"><label>Algorithm Debug Logging</label></div>
+          <div class="form-row row-inline"><input type="checkbox" id="cfg-empty" checked onchange="updateConfig('LOG_EMPTY_FRAMES', this.checked)"><label>Log Empty Frames</label></div>
+          <div class="form-row"><label>Max History (lines)</label><input type="number" id="cfg-history" value="1000" onchange="updateConfig('MAX_HISTORY_LINES', this.value)"></div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Overlays (RESTORED so telemetry cards don’t crash) -->
+  <div id="hover-tip" class="hover-tip">Quick Info</div>
+  <div id="modal-overlay" class="modal-overlay" onclick="closeModal()">
+    <div class="modal-card" onclick="event.stopPropagation()">
+      <button class="modal-close" onclick="closeModal()">&times;</button>
+      <h2 id="modal-title">Title</h2>
+      <p id="modal-desc">Description goes here.</p>
+    </div>
+  </div>
+
+  <script>
+    /**
+     * 1. CONFIGURATION
+     */
+    const config = {
+      UPDATE_INTERVAL_MS: 50,
+      ALGO_MODE: "SMOOTH_CONVERGENCE",
+      MANUAL_UPDATE_FACTOR: 1.00,
+      USE_BOUNDS_CHECK: true,
+      ENABLE_ALGO_DEBUG: true,
+      LOG_EMPTY_FRAMES: true,
+      MAX_HISTORY_LINES: 1000
+    };
+
+    const BRIDGE_URL = "http://localhost:8181/";
+    const MAX_CHART_HISTORY = 300;
+    const AVG_WINDOW_S = 3;
+
+    /**
+     * 2. STATE
+     */
+    const state = {
+      currentTab: 'tab-racing',
+      isConnected: false,
+      hasData: false,
+      activeInterval: 50,
+      getCounter: 0,
+      frame: {},
+      target: { gasP:0, gasL:0, clP:0, clL:0, lagT:0, lagP:0, lagB:0, lagD:0 },
+      display:{ gasP:0, gasL:0, clP:0, clL:0, lagT:0, lagP:0, lagB:0, lagD:0 },
+      lagHistory: [],
+      pedalHistory: [],
+      events: [],
+      avgLagT:0, avgLagP:0, avgLagB:0, avgLagD:0,
+      lastProducerPeriod: 100,
+      netFailStreak: 0,
+
+      /* Algo-debug visibility + timing helpers */
+      lastFetchStartPerf: NaN,
+      lastFetchCycleMs: NaN,
+      lastTelemetrySequence: NaN,
+      lastBatchMeta: null
+    };
+
+    // Algo internal state (kept, but reset safely)
+    const algoState = {
+      integral: 0,
+      history: [],
+      nextTarget: NaN,
+      mode: "ACQUIRE",
+      holdBad: 0,
+      errLP: 0,
+      errInt: 0,
+      ewap_ema: 1.0,
+      ewap_int: 0,
+      qwen_int: 0,
+      qwen_dir: 0,
+      flowAvg: 1.0
+    };
+
+    function resetAlgoState() {
+      algoState.integral = 0;
+      algoState.history = [];
+      algoState.nextTarget = NaN;
+      algoState.mode = "ACQUIRE";
+      algoState.holdBad = 0;
+
+      algoState.errLP = 0;
+      algoState.errInt = 0;
+
+      algoState.ewap_ema = 1.0;
+      algoState.ewap_int = 0;
+
+      algoState.qwen_int = 0;
+      algoState.qwen_dir = 0;
+
+      algoState.flowAvg = 1.0;
+    }
+
+    /**
+     * 2.1 ALGO DEBUG SCORING + RING BUFFER (PedDash-generated)
+     *
+     * - Samples: successful GET responses (one HTTP response == one sample)
+     * - Success: FRAMES RX == 1
+     * - Accuracy: successes/samples * 100 (3 decimals)
+     * - RunTime: seconds since last reset (1 decimal)
+     *
+     * Resets:
+     * - ALGO_MODE change
+     * - ENABLE_ALGO_DEBUG toggle
+     */
+    const ALGO_DEBUG_TELE_KEYS = ['algoSamples', 'algoSuccesses', 'algoAccuracyPct', 'algoRunTimeSec'];
+
+    const algoMetrics = {
+      runId: 0,
+      algoMode: config.ALGO_MODE,
+      startPerf: performance.now(),
+      samples: 0,
+      successes: 0,
+
+      // Ring buffer
+      ring: new Array(config.MAX_HISTORY_LINES),
+      ringHead: 0,   // next write index
+      ringCount: 0   // number of valid records
+    };
+
+    function initAlgoRing(cap) {
+      const c = Math.max(50, Math.min(50000, (cap | 0) || 1000));
+      algoMetrics.ring = new Array(c);
+      algoMetrics.ringHead = 0;
+      algoMetrics.ringCount = 0;
+    }
+
+    function algoRingToArrayChrono() {
+      const cap = algoMetrics.ring?.length || 0;
+      const n = Math.min(algoMetrics.ringCount || 0, cap);
+      const out = [];
+      if (cap <= 0 || n <= 0) return out;
+
+      // Oldest element index
+      const start = (algoMetrics.ringHead - n + cap) % cap;
+      for (let i = 0; i < n; i++) {
+        out.push(algoMetrics.ring[(start + i) % cap]);
+      }
+      return out;
+    }
+
+    function algoRingPush(record) {
+      const cap = algoMetrics.ring?.length || 0;
+      if (cap <= 0) return;
+
+      algoMetrics.ring[algoMetrics.ringHead] = record;
+      algoMetrics.ringHead = (algoMetrics.ringHead + 1) % cap;
+      algoMetrics.ringCount = Math.min(cap, (algoMetrics.ringCount || 0) + 1);
+    }
+
+    function resizeAlgoRing(newCap) {
+      const keep = algoRingToArrayChrono(); // oldest->newest
+      initAlgoRing(newCap);
+
+      // Keep most recent up to new cap
+      const cap = algoMetrics.ring.length;
+      const slice = keep.slice(Math.max(0, keep.length - cap));
+      slice.forEach(r => algoRingPush(r));
+    }
+
+    function clearAlgoDerivedTelemetry() {
+      if (!state.frame) return;
+      delete state.frame.algoSamples;
+      delete state.frame.algoSuccesses;
+      delete state.frame.algoAccuracyPct;
+      delete state.frame.algoRunTimeSec;
+    }
+
+    function resetAlgoMetrics() {
+      algoMetrics.runId++;
+      algoMetrics.algoMode = config.ALGO_MODE;
+      algoMetrics.startPerf = performance.now();
+      algoMetrics.samples = 0;
+      algoMetrics.successes = 0;
+
+      // Reset ring to current capacity (matches MAX_HISTORY_LINES)
+      resizeAlgoRing(config.MAX_HISTORY_LINES);
+
+      // Keep telemetry from going stale on-screen immediately after reset
+      if (!state.frame) state.frame = {};
+      state.frame.algoSamples = 0;
+      state.frame.algoSuccesses = 0;
+      state.frame.algoAccuracyPct = 0;
+      state.frame.algoRunTimeSec = 0;
+    }
+
+    function tickAlgoMetrics(rec, tP, prevSleepMs, nextSleepMs, nextSleepRawMs, nextSleepPostFactorMs, usedSmart, algoCrashMsg) {
+      // Stats
+      algoMetrics.samples++;
+      if (rec === 1) algoMetrics.successes++;
+
+      const runTimeSec = (performance.now() - algoMetrics.startPerf) / 1000;
+      const acc = algoMetrics.samples > 0 ? (algoMetrics.successes / algoMetrics.samples) * 100 : 0;
+
+      if (!state.frame) state.frame = {};
+      state.frame.algoSamples = algoMetrics.samples;
+      state.frame.algoSuccesses = algoMetrics.successes;
+      state.frame.algoAccuracyPct = acc;
+      state.frame.algoRunTimeSec = runTimeSec;
+
+      // Build compact per-sample debug record
+      const d = new Date();
+      const timeStr = d.toLocaleTimeString('en-US',{hour12:false}) + "." + String(d.getMilliseconds()).padStart(3,'0');
+
+      const f = state.frame || {};
+      const bm = state.lastBatchMeta || {};
+
+      const servedAt = bm.servedAtUnixMs;
+      const oldestEnq = bm.oldestEnqueueUnixMs;
+      const newestEnq = bm.newestEnqueueUnixMs;
+
+      const queueAgeOldestMs = (Number.isFinite(servedAt) && Number.isFinite(oldestEnq)) ? (servedAt - oldestEnq) : NaN;
+      const queueSpanMs = (Number.isFinite(newestEnq) && Number.isFinite(oldestEnq)) ? (newestEnq - oldestEnq) : NaN;
+
+      const record = {
+        timeStr,
+        unixMs: Date.now(),
+        runId: algoMetrics.runId,
+        sampleIdx: algoMetrics.samples,
+
+        algoMode: config.ALGO_MODE,
+        smartMode: usedSmart,
+        cfgIntervalMs: config.UPDATE_INTERVAL_MS,
+        manualFactor: config.MANUAL_UPDATE_FACTOR,
+        boundsCheck: config.USE_BOUNDS_CHECK,
+
+        framesRx: rec,
+        frameErr: rec - 1,
+
+        tProducerMs: tP,
+        prevSleepMs,
+        nextSleepRawMs,
+        nextSleepPostFactorMs,
+        nextSleepMs,
+
+        fetchCycleMs: state.lastFetchCycleMs,
+        cycleErrMs: (Number.isFinite(state.lastFetchCycleMs) && Number.isFinite(tP)) ? (state.lastFetchCycleMs - tP) : NaN,
+
+        lagTotalMs: f.lagTotal,
+        lagPedMs: f.fullLoopTime_ms,
+        lagBrgMs: (Number(f.metricLoopProcessMs || 0) + Number(f.metricHttpProcessMs || 0)),
+        lagDashMs: f.lagDash,
+
+        batchId: bm.batchId,
+        servedAtUnixMs: bm.servedAtUnixMs,
+        oldestEnqueueUnixMs: bm.oldestEnqueueUnixMs,
+        newestEnqueueUnixMs: bm.newestEnqueueUnixMs,
+        queueAgeOldestMs,
+        queueSpanMs,
+
+        telemetrySeq: f.telemetry_sequence,
+        seqGap: f.telemetry_sequence_gap,
+
+        // Algo internal snapshots (to help tune PI/PLL style controllers)
+        integral: algoState.integral,
+        errLP: algoState.errLP,
+        errInt: algoState.errInt,
+        pllMode: algoState.mode,
+        pllHoldBad: algoState.holdBad,
+        pllNextTarget: algoState.nextTarget,
+        flowAvg: algoState.flowAvg,
+        ewapEma: algoState.ewap_ema,
+        ewapInt: algoState.ewap_int,
+        qwenInt: algoState.qwen_int,
+
+        algoCrash: algoCrashMsg || ""
+      };
+
+      algoRingPush(record);
+    }
+
+    // UI cache
+    let els = {};
+
+    // Canvas contexts (explicit globals so there’s no “window property” ambiguity)
+    let ctxGas = null, ctxClutch = null, ctxLag = null, ctxWaveGas = null, ctxWaveClutch = null;
+
+    /**
+     * 3. TELEMETRY DEFINITIONS
+     */
+    const TELE_GROUPS = [
+      { title: "Pedal Metrics", keys: ['gas_physical_pct', 'gas_logical_pct', 'clutch_physical_pct', 'clutch_logical_pct'] },
+      { title: "Raw Inputs", keys: ['rawGas', 'gasValue', 'rawClutch', 'clutchValue', 'axisMax', 'axis_normalization_enabled', 'joy_ID', 'joy_Flags'] },
+      { title: "Logic State", keys: ['isRacing', 'peakGasInWindow', 'best_estimate_percent', 'lastFullThrottleTime', 'lastGasActivityTime', 'repeatingClutchCount'] },
+      { title: "Gas Tuning", keys: ['gas_deadzone_in', 'gas_deadzone_out', 'gas_min_usage_percent', 'gas_window', 'gas_timeout', 'auto_gas_deadzone_enabled'] },
+      { title: "Latency (ms)", keys: ['lagTotal', 'fullLoopTime_ms', 'metricLoopProcessMs', 'metricHttpProcessMs', 'metricTtsSpeakMs', 'lagDash', 'activeUpdateInterval'] },
+      { title: "Event Flags", keys: ['gas_alert_triggered', 'clutch_alert_triggered', 'gas_auto_adjust_applied', 'gas_estimate_decreased', 'controller_disconnected', 'controller_reconnected'] },
+      { title: "Diagnostics", keys: ['pedDashGetCount', 'algoMode', 'framesReceivedLastFetch', 'telemetry_sequence', 'batchId', 'receivedAtUnixMs', 'currentTime', 'pendingFrameCount'] }
+    ];
+
+    const TELE_DEFS = {
+      gas_physical_pct: { label: "Gas Phys %", short: "gas_physical_pct: Raw Input", long: "Raw percentage of gas pedal physical travel. (Source: PedMon)" },
+      gas_logical_pct:  { label: "Gas Game %",  short: "gas_logical_pct: Game Value", long: "Final gas value sent to the game after deadzones and logic. (Source: PedMon)" },
+      clutch_physical_pct: { label: "Clutch Phys %", short: "clutch_physical_pct: Raw Input", long: "Raw percentage of clutch physical travel. (Source: PedMon)" },
+      clutch_logical_pct:  { label: "Clutch Game %",  short: "clutch_logical_pct: Game Value", long: "Final clutch value sent to the game after processing. (Source: PedMon)" },
+
+      rawGas: { label: "Gas Raw", short: "rawGas: Hardware units", long: "Direct value from joyGetPosEx. (Source: PedMon)" },
+      gasValue: { label: "Gas Norm", short: "gasValue: Normalized units", long: "Hardware value after inversion correction. (Source: PedMon)" },
+      rawClutch: { label: "Clutch Raw", short: "rawClutch: Hardware units", long: "Direct value from JoyAPI. (Source: PedMon)" },
+      clutchValue: { label: "Clutch Norm", short: "clutchValue: Normalized units", long: "Hardware value after inversion. (Source: PedMon)" },
+      axisMax: { label: "Axis Max", short: "axisMax: Scale", long: "The maximum range of the joystick axis. (Source: PedMon)" },
+      axis_normalization_enabled: { label: "Norm Flag", short: "axis_normalization_enabled: Boolean flag", long: "If 1, PedMon mirrors inverted hardware signals. (Source: PedMon)" },
+      joy_ID: { label: "Joy ID", short: "joy_ID: Integer ID", long: "Windows Joystick ID currently monitored. (Source: PedMon)" },
+      joy_Flags: { label: "Joy Flags", short: "joy_Flags: Bitmask", long: "WinMM flags used for capturing data. (Source: PedMon)" },
+
+      isRacing: { label: "Is Racing", short: "isRacing: Boolean flag", long: "Indicates if the user is currently driving. (Source: PedMon)" },
+      peakGasInWindow: { label: "Peak Gas", short: "peakGasInWindow: Max", long: "Highest gas value reached in current window. (Source: PedMon)" },
+      best_estimate_percent: { label: "Best Est %", short: "best_estimate_percent: Estimate", long: "Suggested ideal deadzone for pedal health. (Source: PedMon)" },
+      lastFullThrottleTime: { label: "Last Full T", short: "lastFullThrottleTime: TickCount", long: "TickCount when full throttle was last hit. (Source: PedMon)" },
+      lastGasActivityTime: { label: "Last Activity", short: "lastGasActivityTime: TickCount", long: "TickCount of last pedal movement. (Source: PedMon)" },
+      repeatingClutchCount: { label: "Noise Reps", short: "repeatingClutchCount: Count", long: "Sequential frames of noise detected. (Source: PedMon)" },
+
+      gas_deadzone_in: { label: "DZ In %", short: "gas_deadzone_in: Percent", long: "Percentage of travel treated as idle. (Source: PedMon)" },
+      gas_deadzone_out: { label: "DZ Out %", short: "gas_deadzone_out: Percent", long: "Percentage of travel treated as 100%. (Source: PedMon)" },
+      gas_min_usage_percent: { label: "Min Usage %", short: "gas_min_usage_percent: Percent", long: "Min travel needed to validate drift checks. (Source: PedMon)" },
+      gas_window: { label: "Gas Window", short: "gas_window: Seconds", long: "Duration checked for full throttle events. (Source: PedMon)" },
+      gas_timeout: { label: "Gas Timeout", short: "gas_timeout: Seconds", long: "Seconds of idle before assuming paused. (Source: PedMon)" },
+      auto_gas_deadzone_enabled: { label: "Auto Adjust", short: "auto_gas_deadzone_enabled: Boolean", long: "If 1, PedMon lowers DZ Out automatically. (Source: PedMon)" },
+
+      lagTotal: { label: "Total Latency", short: "lagTotal: Total pipeline ms", long: "Total time across C (PedMon), PS (PedBridge), and JS (PedDash). (Source: PedDash)" },
+      fullLoopTime_ms: { label: "C Loop", short: "fullLoopTime_ms: PedMon ms", long: "Processing time of the C monitor loop. (Source: PedMon)" },
+      metricLoopProcessMs: { label: "PS Loop", short: "metricLoopProcessMs: PedBridge loop ms", long: "Time PowerShell took to process the shared-memory loop iteration. (Source: PedBridge)" },
+      metricHttpProcessMs: { label: "PS HTTP", short: "metricHttpProcessMs: HTTP serve ms", long: "Time PedBridge spent serving the most recent HTTP request. (Source: PedBridge)" },
+      metricTtsSpeakMs: { label: "PS TTS", short: "metricTtsSpeakMs: TTS call ms", long: "Time spent in the PedBridge TTS speak call path for the most recent utterance (ms). (Source: PedBridge)" },
+      lagDash: { label: "JS Render", short: "lagDash: Browser fetch+update ms", long: "Time taken by the browser to fetch JSON and update UI. (Source: PedDash)" },
+      activeUpdateInterval: { label: "Poll Interval", short: "activeUpdateInterval: Sleep ms", long: "Current delay (ms) between polling iterations. (Source: PedDash)" },
+
+      gas_alert_triggered: { label: "Evt: Gas", short: "gas_alert_triggered: Flag", long: "Fired when gas drift is detected. (Source: PedMon)" },
+      clutch_alert_triggered: { label: "Evt: Clutch", short: "clutch_alert_triggered: Flag", long: "Fired when rudder noise is detected. (Source: PedMon)" },
+      gas_auto_adjust_applied: { label: "Evt: AutoAdj", short: "gas_auto_adjust_applied: Flag", long: "Fired when deadzone was adjusted. (Source: PedMon)" },
+      gas_estimate_decreased: { label: "Evt: EstDec", short: "gas_estimate_decreased: Flag", long: "Fired on new estimation discovery. (Source: PedMon)" },
+      controller_disconnected: { label: "Evt: Disc", short: "controller_disconnected: Flag", long: "Fired when pedal device is lost. (Source: PedMon)" },
+      controller_reconnected: { label: "Evt: Reconn", short: "controller_reconnected: Flag", long: "Fired when device is re-found. (Source: PedMon)" },
+
+      pedDashGetCount: { label: "GET Count", short: "pedDashGetCount: Total GETs", long: "Total HTTP requests issued by the dashboard since page load. (Source: PedDash)" },
+      algoMode: { label: "Algo Mode", short: "algoMode: Selected algorithm", long: "The currently selected Smart Algorithm (ALGO_MODE). (Source: PedDash)" },
+      framesReceivedLastFetch: { label: "Frames Rx", short: "framesReceivedLastFetch: FRAMES RX", long: "Number of telemetry frames delivered in the last HTTP response batch. (Source: PedDash)" },
+      pendingFrameCount: { label: "Pending", short: "pendingFrameCount: Queue depth", long: "Frames waiting in PedBridge queue at the moment the HTTP request was served. (Source: PedBridge)" },
+      telemetry_sequence: { label: "Seq ID", short: "telemetry_sequence: Producer sequence", long: "Increments per PedMon produced frame. (Source: PedMon)" },
+      batchId: { label: "Batch ID", short: "batchId: PedBridge batch", long: "Increments per PedBridge HTTP response. (Source: PedBridge)" },
+      receivedAtUnixMs: { label: "Bridge Served", short: "receivedAtUnixMs: Served time", long: "Time PedBridge served the HTTP response (ms since epoch). (Source: PedBridge)" },
+      currentTime: { label: "C Current", short: "currentTime: TickCount", long: "Windows TickCount at capture. (Source: PedMon)" },
+
+      /* --- PedDash-generated algorithm scoring metrics (shown only when ENABLE_ALGO_DEBUG is checked) --- */
+      algoSamples: { label: "Algo Samples", short: "algoSamples: GET samples", long: "Count of successful HTTP GET responses for the current algo run. One GET response == one sample (regardless of FRAMES RX). Resets on ALGO_MODE change or ENABLE_ALGO_DEBUG toggle. (Source: PedDash)" },
+      algoSuccesses: { label: "Algo Successes", short: "algoSuccesses: FRAMES RX == 1", long: "Number of samples where framesReceivedLastFetch (FRAMES RX) was exactly 1 for the current algo run. Resets on ALGO_MODE change or ENABLE_ALGO_DEBUG toggle. (Source: PedDash)" },
+      algoAccuracyPct: { label: "Algo Accuracy %", short: "algoAccuracyPct: Success rate", long: "Percent of samples where framesReceivedLastFetch (FRAMES RX) == 1. Range 0–100 with 3 decimals. Resets on ALGO_MODE change or ENABLE_ALGO_DEBUG toggle. (Source: PedDash)" },
+      algoRunTimeSec: { label: "Algo Run Time", short: "algoRunTimeSec: Seconds", long: "Seconds the current algorithm has been running since last reset (ALGO_MODE change or ENABLE_ALGO_DEBUG toggle). Displayed with 1 decimal place. (Source: PedDash)" }
+    };
+
+    /**
+     * 4. STRATEGIES
+     */
+    const AlgorithmStrategies = {
+      "FRAME_LOCK": (rec, tP, current) => {
+        const cruise = tP + 5;
+        if (rec === 0) return tP;
+        if (rec > 1) return 10;
+        return cruise;
+      },
+      "SMOOTH_CONVERGENCE": (rec, tP, current) => {
+        if (rec === 0) return Math.min(current * 1.1, tP * 1.5);
+        if (rec === 1) return (current * 0.9) + (tP * 0.1);
+        return current * 0.85;
+      },
+      "ALGO_DIGITAL_PLL": (rec, tP, current) => {
+        const now = performance.now();
+        if (!Number.isFinite(algoState.nextTarget)) algoState.nextTarget = now;
+
+        // Queue-depth phase detector:
+        // rec==0 => too early (positive error), rec==1 => ok, rec>1 => too late (negative error)
+        let e = (rec <= 0) ? 1 : (rec === 1 ? 0 : -(rec - 1));
+
+        // Loop filter (low-pass + integral)
+        algoState.errLP += 0.25 * (e - algoState.errLP);
+        algoState.errInt = Math.max(-8, Math.min(8, algoState.errInt + algoState.errLP));
+
+        let adjust = (6.0 * algoState.errLP) + (0.6 * algoState.errInt);
+
+        // Acquire/Hold gating (slightly conservative for jittery browsers)
+        if (algoState.mode === "ACQUIRE") {
+          if (rec === 1) adjust -= 0.25;
+          if (rec <= 0) {
+            adjust += 5;
+            algoState.mode = "HOLD";
+            algoState.holdBad = 0;
+            algoState.errLP = 0;
+            algoState.errInt = 0;
+          }
+        } else {
+          if (rec !== 1) {
+            if (++algoState.holdBad >= 2) {
+              algoState.mode = "ACQUIRE";
+              algoState.holdBad = 0;
+              algoState.errInt *= 0.5;
+            }
+          } else {
+            algoState.holdBad = 0;
+          }
+        }
+
+        adjust = Math.max(-25, Math.min(25, adjust));
+
+        // Step near producer period
+        const step = Math.max(tP * 0.6, Math.min(tP * 1.4, tP + adjust));
+        algoState.nextTarget += step;
+
+        // If we fell behind, jump forward by whole steps
+        if (algoState.nextTarget < now + 2) {
+          const def = (now + 2) - algoState.nextTarget;
+          algoState.nextTarget += Math.ceil(def / step) * step;
+        }
+
+        return Math.max(0, algoState.nextTarget - now);
+      },
+      "ALGO_INTEGRAL_FLOW": (rec, tP, current) => {
+        algoState.flowAvg = (0.2 * rec) + 0.8 * algoState.flowAvg;
+        return current - ((algoState.flowAvg - 1.0) * 2.0);
+      },
+      "ALGO_GROK_PI": (rec, tP, current) => {
+        const err = 1 - rec;
+        algoState.integral = Math.max(-200, Math.min(200, algoState.integral + err));
+        return current + (10 * err) + (0.05 * algoState.integral);
+      },
+      "ALGO_DEEPSEEK_PI": (rec, tP, current) => {
+        const err = 1.0 - rec;
+        algoState.history.push(err);
+        if (algoState.history.length > 5) algoState.history.shift();
+
+        const smErr = algoState.history.reduce((a,b)=>a+b,0) / algoState.history.length;
+        algoState.integral = Math.max(-200, Math.min(200, algoState.integral + smErr * 50));
+        return (0.7 * current) + 0.3 * (tP + (15 * smErr) + (0.3 * algoState.integral));
+      },
+      "ALGO_QWEN_HYSTERESIS": (rec, tP, current) => {
+        if (rec === 0) return Math.min(200, current * 1.15);
+        const pErr = rec - 1;
+        const adj = 8 * pErr;
+        algoState.qwen_int = Math.max(-tP, Math.min(tP, algoState.qwen_int + pErr));
+        return current - (adj + 0.05 * algoState.qwen_int);
+      },
+      "ALGO_CLAUDE_EWAP": (rec, tP, current) => {
+        algoState.ewap_ema = (0.3 * rec) + 0.7 * algoState.ewap_ema;
+        const err = algoState.ewap_ema - 1.0;
+        algoState.ewap_int = Math.max(-20, Math.min(20, algoState.ewap_int + err));
+
+        let corr = (0.15 * err) + (0.02 * algoState.ewap_int);
+        if (rec === 0 && algoState.ewap_ema < 0.5) corr = Math.min(corr, -0.05);
+        if (rec >= 3) corr = Math.max(corr, 0.2);
+
+        return current - (corr * tP);
+      },
+      "ALGO_LEGACY": (rec, tP, current) => {
+        if (rec === 1) return tP;
+        if (rec > 1) return current * (1 / rec);
+        return tP;
+      }
+    };
+
+    /**
+     * 5. UTILS
+     */
+    function safeSetText(el, text) { if (el) el.textContent = text; }
+
+    // FIXED: pushHistory was missing (primary crash)
+    function pushHistory(arr, item, limit = MAX_CHART_HISTORY) {
+      if (!Array.isArray(arr)) return;
+      arr.push(item);
+      if (arr.length > limit) {
+        arr.splice(0, arr.length - limit);
+      }
+    }
+
+    function switchTab(id) {
+      state.currentTab = id;
+      document.querySelectorAll('.tab-btn').forEach(b => {
+        const btnId = 'btn-' + id.split('-')[1];
+        b.classList.toggle('active', b.id === btnId);
+      });
+      document.querySelectorAll('.tab-content').forEach(t => t.classList.toggle('active', t.id === id));
+    }
+
+    function updateConfig(k, v) {
+      if (!(k in config)) return;
+
+      const prev = config[k];
+      let next = v;
+
+      if (typeof prev === 'number') next = Number.parseFloat(v);
+      if (typeof prev === 'boolean') next = Boolean(v);
+
+      if (Number.isNaN(next) && typeof prev === 'number') next = prev;
+
+      config[k] = next;
+
+      if (k === 'MAX_HISTORY_LINES') {
+        config.MAX_HISTORY_LINES = Math.max(50, Math.min(50000, (config.MAX_HISTORY_LINES | 0) || 1000));
+
+        // Keep events bounded
+        if (state.events.length > config.MAX_HISTORY_LINES) {
+          state.events.splice(config.MAX_HISTORY_LINES);
+        }
+
+        // Ring buffer size must match history lines
+        resizeAlgoRing(config.MAX_HISTORY_LINES);
+      }
+
+      if (k === 'ALGO_MODE') {
+        logEvent("System", `Algo: ${config.ALGO_MODE}`);
+        resetAlgoState();
+
+        // Reset scoring + debug records (requested)
+        resetAlgoMetrics();
+      }
+
+      if (k === 'ENABLE_ALGO_DEBUG') {
+        // Reset on toggle (requested)
+        resetAlgoMetrics();
+
+        // Rebuild Data Map so Diagnostics conditionally shows/hides scoring metrics
+        initTelemetryUI();
+
+        // If disabled, keep derived telemetry from going stale in UI
+        if (!config.ENABLE_ALGO_DEBUG) clearAlgoDerivedTelemetry();
+      }
+    }
+
+    function toggleChip(el, act, cls) { if (el) el.classList.toggle(cls, Boolean(act)); }
+
+    function resizeCanvas(c) {
+      if (!c) return;
+      const r = c.parentElement.getBoundingClientRect();
+      const h = r.height - (c.previousElementSibling ? 30 : 0);
+      if (c.width !== r.width || c.height !== h) { c.width = r.width; c.height = h; }
+    }
+
+    function calcAverages() {
+      const count = Math.max(1, Math.floor((AVG_WINDOW_S * 1000) / (state.activeInterval || 50)));
+      if (state.lagHistory.length === 0) return;
+      const recent = state.lagHistory.slice(-count);
+      const len = recent.length;
+      state.avgLagT = recent.reduce((s,i) => s + i.total, 0) / len;
+      state.avgLagP = recent.reduce((s,i) => s + i.ped, 0) / len;
+      state.avgLagB = recent.reduce((s,i) => s + i.brg, 0) / len;
+      state.avgLagD = recent.reduce((s,i) => s + i.dash, 0) / len;
+    }
+
+    function logEvent(t, m) {
+      if (state.events.length > 0 && state.events[0].msg === m && (Date.now() - state.events[0].ts) < 2000) return;
+
+      const d = new Date();
+      const ts = d.toLocaleTimeString('en-US',{hour12:false}) + "." + String(d.getMilliseconds()).padStart(3,'0');
+      const e = { ts: Date.now(), timeStr: ts, type: t, msg: m };
+
+      state.events.unshift(e);
+      if (state.events.length > config.MAX_HISTORY_LINES) state.events.pop();
+
+      // Ticker (newest-first)
+      if (els.tickerList) {
+        const item = document.createElement('div');
+        item.className = 'ticker-item';
+        item.innerHTML = `<span class="ticker-time">${ts}</span><span>${t}: ${m}</span>`;
+        els.tickerList.prepend(item);
+        if (els.tickerList.children.length > 5) els.tickerList.lastElementChild.remove();
+      }
+
+      // Full event table (newest-first)
+      if (els.fullEventList) {
+        const row = document.createElement('div');
+        row.className = 'event-row';
+        let c = '#fff';
+        if (t === 'Alert') c = 'var(--neon-red)';
+        if (t === 'Warn')  c = 'var(--neon-amber)';
+
+        // 4th column left blank (matches header grid)
+        row.innerHTML = `<div>${ts}</div><div style="color:${c}">${t}</div><div>${m}</div><div></div>`;
+        els.fullEventList.prepend(row);
+        if (els.fullEventList.children.length > 200) els.fullEventList.lastElementChild.remove();
+      }
+    }
+
+    function csvEscape(val) {
+      const s = String(val ?? "");
+      return /[",\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
+    }
+
+    function exportLogs() {
+      const header = "Time,Type,Message\n";
+      const rows = state.events.map(e => `${csvEscape(e.timeStr)},${csvEscape(e.type)},${csvEscape(e.msg)}`).join("\n");
+      const csv = header + rows;
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.setAttribute('href', url);
+      a.setAttribute('download', 'peddash_logs.csv');
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    }
+
+    function exportAlgoDebugCsv() {
+      const rows = algoRingToArrayChrono();
+
+      const cols = [
+        ["Time", r => r.timeStr],
+        ["UnixMs", r => r.unixMs],
+        ["RunId", r => r.runId],
+        ["Sample", r => r.sampleIdx],
+
+        ["AlgoMode", r => r.algoMode],
+        ["SmartMode", r => r.smartMode],
+        ["CfgIntervalMs", r => r.cfgIntervalMs],
+        ["ManualFactor", r => r.manualFactor],
+        ["BoundsCheck", r => r.boundsCheck],
+
+        ["FramesRx", r => r.framesRx],
+        ["FrameErr", r => r.frameErr],
+        ["tP_ms", r => r.tProducerMs],
+
+        ["PrevSleep_ms", r => r.prevSleepMs],
+        ["NextSleepRaw_ms", r => r.nextSleepRawMs],
+        ["NextSleepPostFactor_ms", r => r.nextSleepPostFactorMs],
+        ["NextSleep_ms", r => r.nextSleepMs],
+
+        ["FetchCycle_ms", r => r.fetchCycleMs],
+        ["CycleErr_ms", r => r.cycleErrMs],
+
+        ["LagTotal_ms", r => r.lagTotalMs],
+        ["LagPed_ms", r => r.lagPedMs],
+        ["LagBrg_ms", r => r.lagBrgMs],
+        ["LagDash_ms", r => r.lagDashMs],
+
+        ["BatchId", r => r.batchId],
+        ["ServedAtUnixMs", r => r.servedAtUnixMs],
+        ["OldestEnqueueUnixMs", r => r.oldestEnqueueUnixMs],
+        ["NewestEnqueueUnixMs", r => r.newestEnqueueUnixMs],
+        ["QueueAgeOldest_ms", r => r.queueAgeOldestMs],
+        ["QueueSpan_ms", r => r.queueSpanMs],
+
+        ["TelemetrySeq", r => r.telemetrySeq],
+        ["SeqGap", r => r.seqGap],
+
+        ["AlgoIntegral", r => r.integral],
+        ["AlgoErrLP", r => r.errLP],
+        ["AlgoErrInt", r => r.errInt],
+        ["PLL_Mode", r => r.pllMode],
+        ["PLL_HoldBad", r => r.pllHoldBad],
+        ["PLL_NextTarget", r => r.pllNextTarget],
+        ["FlowAvg", r => r.flowAvg],
+        ["EWAP_EMA", r => r.ewapEma],
+        ["EWAP_Int", r => r.ewapInt],
+        ["QwenInt", r => r.qwenInt],
+
+        ["AlgoCrash", r => r.algoCrash]
+      ];
+
+      const header = cols.map(c => csvEscape(c[0])).join(",") + "\n";
+      const body = rows.map(r => cols.map(c => csvEscape(c[1](r))).join(",")).join("\n");
+      const csv = header + body;
+
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.setAttribute('href', url);
+      a.setAttribute('download', `peddash_algo_debug_run${algoMetrics.runId}.csv`);
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    }
+
+    /**
+     * 6. DRAWING
+     */
+    function drawDualGauge(ctx, label, phys, log) {
+      if (!ctx) return;
+      const w = ctx.canvas.width, h = ctx.canvas.height, cx = w/2, cy = h/2, rO = (w/2)-15, rI = rO-30;
+      ctx.clearRect(0,0,w,h);
+      ctx.lineCap = 'round';
+      ctx.lineWidth = 20;
+      ctx.strokeStyle = '#222';
+      ctx.beginPath(); ctx.arc(cx,cy,rO,0.75*Math.PI,2.25*Math.PI); ctx.stroke();
+      ctx.beginPath(); ctx.arc(cx,cy,rI,0.75*Math.PI,2.25*Math.PI); ctx.stroke();
+
+      const pA = 0.75*Math.PI + (1.5*Math.PI*(Math.max(0, Math.min(100, phys))/100));
+      const grad = ctx.createLinearGradient(0,0,w,0);
+      grad.addColorStop(0,'#00f3ff');
+      grad.addColorStop(1,'#0088aa');
+      ctx.strokeStyle = phys>0 ? grad : '#222';
+      if (phys > 0) { ctx.beginPath(); ctx.arc(cx,cy,rO,0.75*Math.PI,pA); ctx.stroke(); }
+
+      const lA = 0.75*Math.PI + (1.5*Math.PI*(Math.max(0, Math.min(100, log))/100));
+      const color = (log===0) ? '#fff' : (log>=99 ? '#ff3333' : '#39ff14');
+      ctx.strokeStyle = color;
+      ctx.shadowBlur = 15;
+      ctx.shadowColor = color;
+      ctx.beginPath(); ctx.arc(cx,cy,rI,0.75*Math.PI,lA); ctx.stroke();
+      ctx.shadowBlur = 0;
+
+      ctx.fillStyle = color;
+      ctx.font = "bold 80px monospace";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(Math.round(log), cx, cy);
+
+      ctx.fillStyle = "#777";
+      ctx.font = "bold 32px sans-serif";
+      ctx.fillText(label, cx, cy+60);
+    }
+
+    function drawHistoryChart(ctx, data, keys, colors, min, max, multi) {
+      if (!ctx || !data || data.length < 2) return;
+
+      let mi = (min !== null ? min : 0);
+      let ma = max;
+
+      if (ma === null) {
+        ma = 0;
+        data.forEach(d => keys.forEach(k => { if ((d[k] ?? 0) > ma) ma = d[k]; }));
+        ma = Math.max(ma, 10) * 1.1;
+      }
+
+      const w = ctx.canvas.width, h = ctx.canvas.height, pL=40, pR=10, pT=10, pB=30;
+      const mX = (i)=>pL+(i/(MAX_CHART_HISTORY-1))*(w-pL-pR);
+      const mY = (v)=>h-pB-((v-mi)/(ma-mi))*(h-pT-pB);
+
+      ctx.clearRect(0,0,w,h);
+
+      // Grid
+      ctx.strokeStyle='#222'; ctx.lineWidth=1; ctx.fillStyle='#555';
+      ctx.font='12px monospace'; ctx.textAlign='right';
+      for (let i=0;i<=4;i++){
+        const v = mi+(ma-mi)*(i/4);
+        const y = mY(v);
+        ctx.beginPath(); ctx.moveTo(pL,y); ctx.lineTo(w-pR,y); ctx.stroke();
+        ctx.fillText(v.toFixed(0), pL-5, y+4);
+      }
+
+      // X labels
+      ctx.textAlign='center';
+      for (let i=0;i<5;i++){
+        const x = mX((MAX_CHART_HISTORY-1)*(i/4));
+        const s = ((MAX_CHART_HISTORY*(state.activeInterval||50))/1000) * (1-(i/4));
+        ctx.fillText(s===0 ? "Now" : `-${s.toFixed(0)}s`, x, h-8);
+        ctx.beginPath(); ctx.moveTo(x,h-pB); ctx.lineTo(x,h-pB+5); ctx.stroke();
+      }
+
+      // Lines
+      keys.forEach((k,idx)=>{
+        ctx.beginPath();
+        ctx.strokeStyle = colors[idx];
+        ctx.lineWidth = 2;
+        ctx.shadowBlur = multi ? 0 : 4;
+        ctx.shadowColor = colors[idx];
+
+        data.forEach((d,i)=>{
+          const x = mX(i);
+          const y = mY(d[k] ?? 0);
+          if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+        });
+
+        ctx.stroke();
+      });
+      ctx.shadowBlur = 0;
+    }
+
+    /**
+     * 7. DATA LOOP
+     */
+    async function dataLoop() {
+      const startFetch = performance.now();
+
+      // Real-world cadence measurement (includes prior processing + timeout scheduling jitter)
+      if (Number.isFinite(state.lastFetchStartPerf)) {
+        state.lastFetchCycleMs = startFetch - state.lastFetchStartPerf;
+      } else {
+        state.lastFetchCycleMs = NaN;
+      }
+      state.lastFetchStartPerf = startFetch;
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2000);
+
+      try {
+        const res = await fetch(BRIDGE_URL, { signal: controller.signal });
+        clearTimeout(timeoutId);
+
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+        const json = await res.json();
+        state.getCounter++;
+
+        const frames = json?.frames || [];
+        const bi = json?.bridgeInfo || {};
+
+        // Store batch-level metadata for algo-debug export (helps analyze queue dynamics/jitter)
+        if (frames.length > 0) {
+          const oldest = frames[0];
+          const newest = frames[frames.length - 1];
+          state.lastBatchMeta = {
+            batchId: bi.batchId ?? newest.batchId ?? null,
+            servedAtUnixMs: bi.servedAtUnixMs ?? null,
+            framesInBatch: frames.length,
+            pendingFrameCount: bi.pendingFrameCount ?? frames.length,
+            oldestEnqueueUnixMs: Number.isFinite(oldest?.receivedAtUnixMs) ? oldest.receivedAtUnixMs : null,
+            newestEnqueueUnixMs: Number.isFinite(newest?.receivedAtUnixMs) ? newest.receivedAtUnixMs : null
+          };
+        } else {
+          state.lastBatchMeta = {
+            batchId: bi.batchId ?? null,
+            servedAtUnixMs: bi.servedAtUnixMs ?? null,
+            framesInBatch: 0,
+            pendingFrameCount: bi.pendingFrameCount ?? 0,
+            oldestEnqueueUnixMs: null,
+            newestEnqueueUnixMs: null
+          };
+        }
+
+        if (frames.length === 0) {
+          if (config.LOG_EMPTY_FRAMES) logEvent("Info", "Bridge: 0 frames received");
+
+          // Maintain a meaningful “0 frames” telemetry indicator
+          state.frame = { ...(state.frame || {}), framesReceivedLastFetch: 0, pendingFrameCount: bi.pendingFrameCount ?? state.frame.pendingFrameCount ?? 0 };
+
+          // Keep "served at" time consistent with UI definition when possible
+          if (Number.isFinite(state.lastBatchMeta?.servedAtUnixMs)) {
+            state.frame.receivedAtUnixMs = state.lastBatchMeta.servedAtUnixMs;
+          }
+
+          updateNonFrameMetrics(startFetch);
+
+          const tp = state.lastProducerPeriod || 100;
+          schedule(0, tp);
+          return;
+        }
+
+        const latest = frames[frames.length - 1];
+
+        latest.framesReceivedLastFetch = frames.length;
+        latest.pendingFrameCount = bi.pendingFrameCount ?? 0;
+        latest.batchId = bi.batchId ?? latest.batchId;
+
+        // Preserve enqueue-time (from per-frame) AND store served-time (from bridgeInfo).
+        // Keep receivedAtUnixMs as "served" for backwards compatibility with existing UI/defs.
+        const enqueueAt = latest.receivedAtUnixMs;
+        latest.bridgeEnqueueAtUnixMs = Number.isFinite(enqueueAt) ? enqueueAt : latest.bridgeEnqueueAtUnixMs;
+        latest.bridgeServedAtUnixMs = state.lastBatchMeta?.servedAtUnixMs ?? latest.bridgeServedAtUnixMs;
+        latest.receivedAtUnixMs = latest.bridgeServedAtUnixMs ?? bi.servedAtUnixMs ?? latest.receivedAtUnixMs;
+
+        state.isConnected = true;
+        state.netFailStreak = 0;
+
+        if (!state.hasData) { logEvent("System", "Bridge Connected."); state.hasData = true; }
+
+        processFrame(latest, startFetch);
+
+        const tP = (latest.sleep_Time || 100) + (latest.fullLoopTime_ms || 0);
+        state.lastProducerPeriod = tP;
+
+        schedule(frames.length, tP);
+
+      } catch (e) {
+        clearTimeout(timeoutId);
+
+        // AbortError should be treated as a transient timing hiccup, not a hard disconnect
+        if (e && (e.name === "AbortError" || String(e.message).toLowerCase().includes("aborted"))) {
+          state.netFailStreak++;
+          logEvent("Warn", "Fetch timeout/abort (2s) - retrying");
+          if (!state.hasData && state.netFailStreak >= 3) state.isConnected = false;
+          setTimeout(dataLoop, 250);
+          return;
+        }
+
+        state.netFailStreak++;
+        logEvent("Error", e?.message || String(e));
+
+        // Only flip disconnected after repeated failures (prevents 1-off blips killing the UI)
+        if (state.netFailStreak >= 2) {
+          state.isConnected = false;
+          state.target = { gasP:0, gasL:0, clP:0, clL:0, lagT:0, lagP:0, lagB:0, lagD:0 };
+          state.frame = {};
+        }
+
+        setTimeout(dataLoop, 1000);
+      }
+    }
+
+    function schedule(rec, tP) {
+      const prevInterval = state.activeInterval;
+
+      let sleep = config.UPDATE_INTERVAL_MS;
+
+      let usedSmart = false;
+      let sleepRaw = NaN;
+      let sleepPostFactor = NaN;
+      let algoCrashMsg = "";
+
+      if (sleep === 0) {
+        usedSmart = true;
+
+        const fn = AlgorithmStrategies[config.ALGO_MODE];
+        try {
+          sleepRaw = fn ? fn(rec, tP, prevInterval) : 50;
+          if (!Number.isFinite(sleepRaw)) sleepRaw = 50;
+        } catch (e) {
+          algoCrashMsg = e?.message || String(e);
+          logEvent("Error", `Algo crash: ${algoCrashMsg}`);
+          sleepRaw = 50;
+        }
+
+        sleepPostFactor = sleepRaw * config.MANUAL_UPDATE_FACTOR;
+        sleep = sleepPostFactor;
+
+        if (config.USE_BOUNDS_CHECK) sleep = Math.max(10, Math.min(sleep, 1000));
+      }
+
+      state.activeInterval = sleep;
+
+      // Algo scoring + debug ring buffer (only when enabled)
+      if (config.ENABLE_ALGO_DEBUG) {
+        tickAlgoMetrics(rec, tP, prevInterval, sleep, sleepRaw, sleepPostFactor, usedSmart, algoCrashMsg);
+      } else {
+        clearAlgoDerivedTelemetry();
+      }
+
+      setTimeout(dataLoop, sleep);
+    }
+
+    function processFrame(f, start) {
+      state.frame = f;
+
+      // Sequence gap tracking (queue dynamics + drop detection)
+      const seq = Number(f.telemetry_sequence);
+      if (Number.isFinite(seq)) {
+        const prev = state.lastTelemetrySequence;
+        f.telemetry_sequence_gap = Number.isFinite(prev) ? (seq - prev) : 0;
+        state.lastTelemetrySequence = seq;
+      } else {
+        f.telemetry_sequence_gap = 0;
+      }
+
+      const dLag = performance.now() - start;
+      f.lagDash = dLag;
+      f.activeUpdateInterval = state.activeInterval;
+      f.pedDashGetCount = state.getCounter;
+      f.algoMode = config.ALGO_MODE;
+
+      const tLag = (f.fullLoopTime_ms||0) + (f.metricLoopProcessMs||0) + (f.metricHttpProcessMs||0) + dLag;
+      f.lagTotal = tLag;
+
+      state.target = {
+        gasP: f.gas_physical_pct || 0,
+        gasL: f.gas_logical_pct || 0,
+        clP: f.clutch_physical_pct || 0,
+        clL: f.clutch_logical_pct || 0,
+        lagT: tLag,
+        lagP: f.fullLoopTime_ms || 0,
+        lagB: (f.metricLoopProcessMs||0) + (f.metricHttpProcessMs||0),
+        lagD: dLag
+      };
+
+      if (f.gas_alert_triggered) logEvent("Alert", `Gas Drift: ${f.percentReached ?? ""}%`);
+      if (f.clutch_alert_triggered) logEvent("Warn", "Rudder Noise");
+      if (f.controller_disconnected) logEvent("Alert", "Controller Lost");
+      if (f.controller_reconnected) logEvent("Info", "Controller Reconnected");
+
+      pushHistory(state.lagHistory, {
+        t: Date.now(),
+        total: tLag,
+        ped: f.fullLoopTime_ms || 0,
+        brg: (f.metricLoopProcessMs||0) + (f.metricHttpProcessMs||0),
+        dash: dLag
+      }, MAX_CHART_HISTORY);
+
+      pushHistory(state.pedalHistory, {
+        t: Date.now(),
+        gasP: f.gas_physical_pct || 0,
+        clP: f.clutch_physical_pct || 0
+      }, MAX_CHART_HISTORY);
+
+      calcAverages();
+    }
+
+    function updateNonFrameMetrics(start) {
+      // Keep lag display active even on empty frames
+      const dLag = performance.now() - start;
+      state.target.lagD = dLag;
+      state.display.lagD = dLag;
+
+      // Keep telemetry updated
+      if (!state.frame) state.frame = {};
+      state.frame.lagDash = dLag;
+      state.frame.pedDashGetCount = state.getCounter;
+      state.frame.algoMode = config.ALGO_MODE;
+      state.frame.activeUpdateInterval = state.activeInterval;
+    }
+
+    /**
+     * 8. RENDERING
+     */
+    function renderLoop() {
+      const l = 0.2;
+      state.display.gasP += (state.target.gasP - state.display.gasP) * l;
+      state.display.gasL += (state.target.gasL - state.display.gasL) * l;
+      state.display.clP  += (state.target.clP  - state.display.clP ) * l;
+      state.display.clL  += (state.target.clL  - state.display.clL ) * l;
+
+      // Lags snappy
+      state.display.lagT = state.target.lagT;
+      state.display.lagP = state.target.lagP;
+      state.display.lagB = state.target.lagB;
+      state.display.lagD = state.target.lagD;
+
+      renderUI();
+      requestAnimationFrame(renderLoop);
+    }
+
+    function renderUI() {
+      // Header status
+      if (state.isConnected) {
+        safeSetText(els.brandStatus, "Online");
+        if (els.brandStatus) els.brandStatus.style.color = "var(--neon-green)";
+      } else {
+        safeSetText(els.brandStatus, "Connecting...");
+        if (els.brandStatus) els.brandStatus.style.color = "#777";
+      }
+
+      // Disconnect indicator
+      const disc = !state.isConnected || (state.frame && state.frame.controller_disconnected === 1);
+      if (els.discInd) els.discInd.classList.toggle('active', disc);
+
+      // FFW indicator (requested behavior)
+      const rec = Number(state.frame?.framesReceivedLastFetch ?? 0);
+      const ffw = Number.isFinite(rec) && rec > 1;
+      if (els.ffwInd) els.ffwInd.classList.toggle('active', ffw);
+
+      // Header metrics
+      safeSetText(els.hdrTotal, (state.display.lagT || 0).toFixed(0));
+      safeSetText(els.hdrPed,   (state.display.lagP || 0).toFixed(0));
+      safeSetText(els.hdrBrg,   (state.display.lagB || 0).toFixed(0));
+      safeSetText(els.hdrDsh,   (state.display.lagD || 0).toFixed(0));
+
+      if (state.currentTab === 'tab-racing') renderRacing();
+      else if (state.currentTab === 'tab-lag') renderLag();
+      else if (state.currentTab === 'tab-signals') renderSignals();
+      else if (state.currentTab === 'tab-telemetry') renderTelemetry();
+    }
+
+    function renderRacing() {
+      drawDualGauge(ctxGas, "GAS", state.display.gasP, state.display.gasL);
+      drawDualGauge(ctxClutch, "CLUTCH", state.display.clP, state.display.clL);
+
+      safeSetText(els.lblGasPhys, state.display.gasP.toFixed(0) + "%");
+      safeSetText(els.lblGasLog,  state.display.gasL.toFixed(0) + "%");
+      safeSetText(els.lblClutchPhys, state.display.clP.toFixed(0) + "%");
+      safeSetText(els.lblClutchLog,  state.display.clL.toFixed(0) + "%");
+
+      const f = state.frame || {};
+      toggleChip(els.stDrift,  f.gas_alert_triggered, 'active-red');
+      toggleChip(els.stNoise,  f.clutch_alert_triggered, 'active-amber');
+      toggleChip(els.stAuto,   f.gas_auto_adjust_applied, 'active-blue');
+      toggleChip(els.stRacing, f.isRacing, 'active-green');
+    }
+
+    function renderLag() {
+      safeSetText(els.cardTotal, (state.display.lagT||0).toFixed(0) + " ms");
+      safeSetText(els.cardPed,   (state.display.lagP||0).toFixed(0) + " ms");
+      safeSetText(els.cardBrg,   (state.display.lagB||0).toFixed(0) + " ms");
+      safeSetText(els.cardDsh,   (state.display.lagD||0).toFixed(0) + " ms");
+
+      safeSetText(els.avgTotal, `Avg: ${state.avgLagT.toFixed(1)}`);
+      safeSetText(els.avgPed,   `Avg: ${state.avgLagP.toFixed(1)}`);
+      safeSetText(els.avgBrg,   `Avg: ${state.avgLagB.toFixed(1)}`);
+      safeSetText(els.avgDsh,   `Avg: ${state.avgLagD.toFixed(1)}`);
+
+      resizeCanvas(els.cvsLag);
+      drawHistoryChart(ctxLag, state.lagHistory, ['total', 'brg', 'dash', 'ped'],
+        ['#ff3333', '#39ff14', '#ff00ff', '#00f3ff'], 0, null, true);
+    }
+
+    function renderSignals() {
+      resizeCanvas(els.cvsWaveGas);
+      resizeCanvas(els.cvsWaveClutch);
+      drawHistoryChart(ctxWaveGas, state.pedalHistory, ['gasP'], ['#00f3ff'], 0, 100, false);
+      drawHistoryChart(ctxWaveClutch, state.pedalHistory, ['clP'], ['#39ff14'], 0, 100, false);
+    }
+
+    function renderTelemetry() {
+      const f = state.frame || {};
+      Object.keys(TELE_DEFS).forEach(k => {
+        let val = f[k];
+
+        // keep framesReceivedLastFetch numeric (for warn-red)
+        const isFramesRx = (k === 'framesReceivedLastFetch');
+        const rawNum = typeof val === 'number' ? val : (val !== undefined ? Number(val) : NaN);
+
+        // Formatting rules
+        if (typeof val === 'number') {
+          if (k === 'algoAccuracyPct') val = val.toFixed(3);
+          else if (k === 'algoRunTimeSec') val = val.toFixed(1);
+          else val = (val % 1 === 0) ? val : val.toFixed(1);
+        }
+
+        if (val === undefined) val = "--";
+
+        const el = document.getElementById(`tele-${k}`);
+        if (el) {
+          el.textContent = val;
+          if (isFramesRx) {
+            const bad = Number.isFinite(rawNum) ? (rawNum !== 1) : false;
+            el.classList.toggle('warn-red', bad);
+          }
+        }
+      });
+    }
+
+    /**
+     * 9. TELEMETRY UI BUILD
+     */
+    function getTelemetryGroupKeys(group) {
+      if (group.title !== 'Diagnostics') return group.keys;
+
+      // Only add algo scoring metrics when debug is enabled (requested behavior)
+      if (!config.ENABLE_ALGO_DEBUG) return group.keys;
+
+      // Insert right after FRAMES RX card (most relevant location)
+      const out = [];
+      let inserted = false;
+      group.keys.forEach(k => {
+        out.push(k);
+        if (k === 'framesReceivedLastFetch') {
+          out.push(...ALGO_DEBUG_TELE_KEYS);
+          inserted = true;
+        }
+      });
+      if (!inserted) out.push(...ALGO_DEBUG_TELE_KEYS);
+      return out;
+    }
+
+    function initTelemetryUI() {
+      const container = document.getElementById('tele-container');
+      if (!container) return;
+      container.innerHTML = '';
+
+      TELE_GROUPS.forEach(group => {
+        const groupDiv = document.createElement('div');
+        groupDiv.className = 'tele-group';
+
+        const header = document.createElement('div');
+        header.className = 'tele-group-header';
+        header.textContent = group.title;
+        groupDiv.appendChild(header);
+
+        const gridDiv = document.createElement('div');
+        gridDiv.className = 'tele-grid-section';
+
+        const keys = getTelemetryGroupKeys(group);
+
+        keys.forEach(key => {
+          const def = TELE_DEFS[key] || { label: key, short: `${key}:`, long: "" };
+          const card = document.createElement('div');
+          card.className = 'tele-card';
+          card.innerHTML = `<h5>${def.label}</h5><div class="tele-val" id="tele-${key}">--</div>`;
+
+          card.onmouseenter = (e) => showHoverTip(e, def.short);
+          card.onmousemove = (e) => moveHoverTip(e);
+          card.onmouseleave = () => hideHoverTip();
+
+          card.onclick = () => {
+            const title = document.getElementById('modal-title');
+            const desc  = document.getElementById('modal-desc');
+            const overlay = document.getElementById('modal-overlay');
+            if (title) title.textContent = def.label;
+            if (desc)  desc.textContent = def.long || "";
+            if (overlay) overlay.classList.add('open');
+          };
+
+          gridDiv.appendChild(card);
+        });
+
+        groupDiv.appendChild(gridDiv);
+        container.appendChild(groupDiv);
+      });
+    }
+
+    function showHoverTip(e, txt) {
+      const t = document.getElementById('hover-tip');
+      if (!t) return;
+      t.textContent = txt;
+      t.classList.add('visible');
+      moveHoverTip(e);
+    }
+
+    function moveHoverTip(e) {
+      const t = document.getElementById('hover-tip');
+      if (!t) return;
+      t.style.left = (e.clientX + 15) + 'px';
+      t.style.top  = (e.clientY + 15) + 'px';
+    }
+
+    function hideHoverTip() {
+      const t = document.getElementById('hover-tip');
+      if (t) t.classList.remove('visible');
+    }
+
+    function closeModal() {
+      const overlay = document.getElementById('modal-overlay');
+      if (overlay) overlay.classList.remove('open');
+    }
+
+    /**
+     * 10. INITIALIZATION
+     */
+    window.onload = function() {
+      // Cache DOM
+      els = {
+        brandStatus: document.getElementById('session-status'),
+        discInd: document.getElementById('disc-indicator'),
+        ffwInd: document.getElementById('ffw-indicator'),
+        hdrTotal: document.getElementById('hdr-total-lag'),
+        hdrPed: document.getElementById('hdr-ped-lag'),
+        hdrBrg: document.getElementById('hdr-brg-lag'),
+        hdrDsh: document.getElementById('hdr-dsh-lag'),
+
+        cvsGas: document.getElementById('canvas-gas'),
+        cvsClutch: document.getElementById('canvas-clutch'),
+        lblGasPhys: document.getElementById('lbl-gas-phys'),
+        lblGasLog: document.getElementById('lbl-gas-log'),
+        lblClutchPhys: document.getElementById('lbl-clutch-phys'),
+        lblClutchLog: document.getElementById('lbl-clutch-log'),
+
+        stDrift: document.getElementById('status-drift'),
+        stNoise: document.getElementById('status-noise'),
+        stAuto: document.getElementById('status-auto'),
+        stRacing: document.getElementById('status-racing'),
+
+        tickerList: document.getElementById('ticker-list'),
+
+        cardTotal: document.getElementById('card-total-lag'),
+        cardPed: document.getElementById('card-ped-lag'),
+        cardBrg: document.getElementById('card-brg-lag'),
+        cardDsh: document.getElementById('card-dsh-lag'),
+        avgTotal: document.getElementById('avg-total-lag'),
+        avgPed: document.getElementById('avg-ped-lag'),
+        avgBrg: document.getElementById('avg-brg-lag'),
+        avgDsh: document.getElementById('avg-dsh-lag'),
+
+        cvsLag: document.getElementById('canvas-lag-chart'),
+        cvsWaveGas: document.getElementById('canvas-wave-gas'),
+        cvsWaveClutch: document.getElementById('canvas-wave-clutch'),
+
+        fullEventList: document.getElementById('full-event-list')
+      };
+
+      ctxGas = els.cvsGas ? els.cvsGas.getContext('2d') : null;
+      ctxClutch = els.cvsClutch ? els.cvsClutch.getContext('2d') : null;
+      ctxLag = els.cvsLag ? els.cvsLag.getContext('2d') : null;
+      ctxWaveGas = els.cvsWaveGas ? els.cvsWaveGas.getContext('2d') : null;
+      ctxWaveClutch = els.cvsWaveClutch ? els.cvsWaveClutch.getContext('2d') : null;
+
+      // Initialize ring and metrics
+      initAlgoRing(config.MAX_HISTORY_LINES);
+      resetAlgoMetrics();
+
+      initTelemetryUI();
+      logEvent("System", "Initializing Dashboard...");
+      renderLoop();
+      dataLoop();
+    };
+
+    // Expose functions for inline HTML onclick handlers (robust across environments)
+    window.switchTab = switchTab;
+    window.updateConfig = updateConfig;
+    window.exportLogs = exportLogs;
+    window.exportAlgoDebugCsv = exportAlgoDebugCsv;
+    window.closeModal = closeModal;
+  </script>
+</body>
+</html>
