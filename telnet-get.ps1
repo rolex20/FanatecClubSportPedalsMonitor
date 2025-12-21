@@ -1,4 +1,6 @@
-﻿# Create a TCP client and connect to localhost:8181
+# A simple telnet like GET to troubleshoot web server JSON files
+ 
+ # Create a TCP client and connect to localhost:8181
 $client = New-Object System.Net.Sockets.TcpClient
 $client.Connect("localhost", 8181)
 
@@ -22,6 +24,7 @@ $response = $reader.ReadToEnd()
 $response | Set-Content "raw_response.json"
 
 # OR, if you must print to console, force it to not wrap:
+
 Write-Host $response
 
 
