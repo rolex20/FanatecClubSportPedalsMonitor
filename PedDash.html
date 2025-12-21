@@ -324,6 +324,42 @@
     const MAX_CHART_HISTORY = 300;
     const AVG_WINDOW_S = 3;
 
+    // Centralized user-facing messages for telemetry flags
+    const EVENT_MESSAGES = {
+      gas_alert_triggered: {
+        type: "Alert",
+        message: f => `Gas Drift: ${f.percentReached ?? ""}%`
+      },
+      clutch_alert_triggered: {
+        type: "Warn",
+        message: () => "Rudder Noise"
+      },
+      controller_disconnected: {
+        type: "Alert",
+        message: () => "Controller Lost"
+      },
+      controller_reconnected: {
+        type: "Info",
+        message: () => "Controller Reconnected"
+      },
+      gas_estimate_decreased: {
+        type: "Warn",
+        message: f => {
+          const est = Number(f.best_estimate_percent);
+          const estStr = Number.isFinite(est) ? est.toFixed(1).replace(/\.0+$/, '') : (f.best_estimate_percent ?? "?");
+          return `New deadzone estimation: ${estStr}%`;
+        }
+      },
+      gas_auto_adjust_applied: {
+        type: "Info",
+        message: f => {
+          const dzOut = Number(f.gas_deadzone_out);
+          const dzStr = Number.isFinite(dzOut) ? dzOut.toFixed(1).replace(/\.0+$/, '') : (f.gas_deadzone_out ?? "?");
+          return `Auto-adjust applied: DZ Out -> ${dzStr}%`;
+        }
+      }
+    };
+
     /**
      * 2. STATE
      */
@@ -1221,6 +1257,14 @@
       setTimeout(dataLoop, sleep);
     }
 
+    function logFlagEvents(f) {
+      Object.entries(EVENT_MESSAGES).forEach(([flag, def]) => {
+        if (!f[flag]) return;
+        const msg = typeof def.message === 'function' ? def.message(f) : def.message;
+        if (msg) logEvent(def.type, msg);
+      });
+    }
+
     function processFrame(f, start) {
       state.frame = f;
 
@@ -1254,22 +1298,7 @@
         lagD: dLag
       };
 
-      if (f.gas_alert_triggered) logEvent("Alert", `Gas Drift: ${f.percentReached ?? ""}%`);
-      if (f.clutch_alert_triggered) logEvent("Warn", "Rudder Noise");
-      if (f.controller_disconnected) logEvent("Alert", "Controller Lost");
-      if (f.controller_reconnected) logEvent("Info", "Controller Reconnected");
-
-      if (f.gas_estimate_decreased) {
-        const est = Number(f.best_estimate_percent);
-        const estStr = Number.isFinite(est) ? est.toFixed(1).replace(/\.0+$/, '') : (f.best_estimate_percent ?? "?");
-        logEvent("Warn", `New deadzone estimation: ${estStr}%`);
-      }
-
-      if (f.gas_auto_adjust_applied) {
-        const dzOut = Number(f.gas_deadzone_out);
-        const dzStr = Number.isFinite(dzOut) ? dzOut.toFixed(1).replace(/\.0+$/, '') : (f.gas_deadzone_out ?? "?");
-        logEvent("Info", `Auto-adjust applied: DZ Out -> ${dzStr}%`);
-      }
+      logFlagEvents(f);
 
       pushHistory(state.lagHistory, {
         t: Date.now(),
