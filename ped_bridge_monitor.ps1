@@ -2,6 +2,7 @@
 .SYNOPSIS
     PedBridge Monitor - Telemetry Accumulation & Statistics
     Connects to the PedBridge HTTP server and validates timing metrics.
+    Used for troubleshooting and debugging only
 
 .DESCRIPTION
     Cycles through a list of target frame counts (1..1000).
@@ -100,4 +101,5 @@ while ($true) {
     
     Write-Host "--- Cycle Complete ---" -ForegroundColor DarkGray
     Start-Sleep -Seconds 1
+
 }
