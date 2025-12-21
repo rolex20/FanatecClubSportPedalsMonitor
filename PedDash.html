@@ -1259,6 +1259,18 @@
       if (f.controller_disconnected) logEvent("Alert", "Controller Lost");
       if (f.controller_reconnected) logEvent("Info", "Controller Reconnected");
 
+      if (f.gas_estimate_decreased) {
+        const est = Number(f.best_estimate_percent);
+        const estStr = Number.isFinite(est) ? est.toFixed(1).replace(/\.0+$/, '') : (f.best_estimate_percent ?? "?");
+        logEvent("Warn", `New deadzone estimation: ${estStr}%`);
+      }
+
+      if (f.gas_auto_adjust_applied) {
+        const dzOut = Number(f.gas_deadzone_out);
+        const dzStr = Number.isFinite(dzOut) ? dzOut.toFixed(1).replace(/\.0+$/, '') : (f.gas_deadzone_out ?? "?");
+        logEvent("Info", `Auto-adjust applied: DZ Out -> ${dzStr}%`);
+      }
+
       pushHistory(state.lagHistory, {
         t: Date.now(),
         total: tLag,
