@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>PedDash Arcade - Production v19</title>
+  <title>PedDash Arcade - Production v19 - (fixes by ChatGPT and me)</title>
   <style>
     :root {
       --bg-color: #050508;
@@ -467,8 +467,9 @@
       algoMetrics.samples = 0;
       algoMetrics.successes = 0;
 
-      // Reset ring to current capacity (matches MAX_HISTORY_LINES)
-      resizeAlgoRing(config.MAX_HISTORY_LINES);
+      // Do not Reset ring to current capacity (matches MAX_HISTORY_LINES)
+	  // When changing algorithm, i want to see and compare debug info with other algorithms
+      // resizeAlgoRing(config.MAX_HISTORY_LINES);
 
       // Keep telemetry from going stale on-screen immediately after reset
       if (!state.frame) state.frame = {};
