@@ -1,52 +1,86 @@
-- Act as an expert system engineer with deep expertise as a game developer in c, powershell and c#
+**Role:** Act as a Senior .NET and PowerShell System Architect.
 
-- Help me plan the following task (don't code yet):
+**The Environment:** Windows 11, strictly **PowerShell 5.1** (Desktop Edition).
 
-- I need to integrate the existing PedMon (main.c) and PedBridge.ps1 into only one new Powershell script named FanatecPedals.ps1.  This way when I need to make changes in main.c I won't need to go to my developer laptop to recompile, then take the executable and test it in my gaming pc and go back to the laptop to fix any issues.  With the new FanatecPedals.ps1, I will be able to make changes to FanatecPedals.ps1 and test them directly into my gaming PC.  I've tested PedMon (main.c) and PedBridge.ps1 and they are so fast that I am not concerned about delays, besides the deep interactions with the windows API for Joystick will need to be done from a helper c# class which is compiled and will run fast so no worries there.
+**The Challenge:**
+I am refactoring a complex telemetry system. I am merging a high-frequency main loop (reading Joystick hardware via P/Invoke) and an HTTP JSON Server (running in a background thread) into a **single .ps1 script**.
 
-- I also need **absolutely all** user message strings from PedMon (main.c) and PedBridge.ps1 to be at the top of the new FanatecPedals.ps1 so I can easily modify them without the need for hunting them all over the code like a monkey.
+I need to pass data from the Main Thread to the Background HTTP Thread via a thread-safe `ConcurrentQueue`. I have two architectural approaches. One is "dirty" but works (from a legacy script), and the new "clean" dependency-injection approach is failing (the queue appears empty/disconnected in the background thread).
 
-- The same with configuration defaults, all at the top but after the strings.
+**The Goal:**
+I need you to analyze why the "Clean" approach is failing in PowerShell 5.1, and propose specific, elegant patterns to share a **Live Reference** of a .NET Object (`ConcurrentQueue`) between the main session and a `[PowerShell]::Create()` Runspace.
 
-- Also, it won't be necessary for the new FanatecPedals.ps1 to use a shared memory to read the values from the Joystick.   New FanatecPedals.ps1 will read the values from the joystick with a helper c# class and after that they can be made available to the http server by adding it to the list of frames handled by the current concurrent collection as it is doing now in PedBridge.ps1.
+---
 
-- This means that the new FanatecPedals.ps1 will need to leverage all possible benefits from a single integrated program instead of having two programs PedMon (main.c) and PedBridge.ps1
+### Architecture A: The "Dirty" Way (Legacy - It Works)
+In the old script (`PedBridge.ps1`), we used a static class with static fields. The background thread simply accessed the type directly.
 
-- The new FanatecPedals.ps1 needs to run perfectly on Powershell 5.1 on my gaming Windows 11 PC (Galvatron)
-
-- The new FanatecPedals.ps1 will leverage all idiomatic benefits of powershell 5.1\n
-
-- The new FanatecPedals.ps1 will minimize as much as possible the use of c# helper classes.  Only the bare minimun Win API calls and whatever else that really must be on C#:  This way the user will be able to easily make changes and test them in the gaming PC.  The user is familiar with powershell but not with changing c# code.
-
-- The new FanatecPedals.ps1 needs to handle the same command lines that PedMon (main.c) actually handles.  The new FanatecPedals.ps1 will always perform TTS on all the same events that old PedMon (main.c) and PedBridge.ps1 actually do.   You can use the Powershell's native way to handle argument/command line parameters so no particular need to replicate or mirror the functionality in  <getopt.h>
-
-- The new FanatecPedals.ps1 will always use async speak calls to avoid blocking (the same way it is doing now)
-
-- The new FanatecPedals.ps1 needs to deliver exactly the same telemetry values via HTTP as PedBridge.ps1
-
-- The new FanatecPedals.ps1 still needs several threads, one to read the telemetry at the specified interval and add/accumulate the samples/frames in an efficient/concurrent collection/structure (in the same way that is doing right now) and at least another to do the web serving.
-
-- The new FanatecPedals.ps1 default behavior will be to display help and exit when no command line arguments were used.
-
-- All this means, do not touch the current PedMon in (main.c ) or PedBridge.ps1
-
-- CRITICAL: There are other components (PedDash.html), that rely on each one of the metrics/telemetry sent by the existing PedBridge.ps1 so is critical that the new FanatecPedals.ps1 exposes exactly the same ones to maintain 100% compatibility.
-
-- Add the same type of protection to the redefinition of the add type  for c shell from the current PedBridge, I am talking about this: (snippet follows from PedBridge.ps1)
-```
-Powershell
-} else {
-    Write-Warning "Using existing C# definition. If you modified the C# code, please restart PowerShell."
+**C# Definition:**
+```csharp
+namespace PedMon {
+    public static class Shared {
+        public static ConcurrentQueue<object> TelemetryQueue = new ConcurrentQueue<object>();
+    }
 }
 ```
 
-- Add any other recommendations you can think of.
+**PowerShell Logic:**
+```powershell
+# Background Thread Setup
+$ps = [PowerShell]::Create()
+$ps.AddScript({
+    # Directly accessing the static member from the AppDomain
+    $q = [PedMon.Shared]::TelemetryQueue
+    # ... logic to Dequeue ...
+})
+$ps.BeginInvoke()
+```
+*   **Why it works:** The Type is loaded into the AppDomain. Both the Main Runspace and the Background Runspace seem to share the same AppDomain in this context, so they see the same static memory.
+*   **Why we dislike it:** It relies on global static state and implicit scoping, which feels brittle and "dirty."
 
-- Please create the technical plan to do this in one shot.
+---
 
+### Architecture B: The "Clean" Way (Current Attempt - Fails)
+In the new script (`FanatecPedals.ps1`), I am trying to inject the specific instance of the Queue into the background runspace to avoid relying on static discovery.
 
+**C# Definition:**
+```csharp
+namespace Fanatec {
+    public static class Shared {
+        public static ConcurrentQueue<PedalMonState> TelemetryQueue = new ConcurrentQueue<PedalMonState>();
+    }
+}
+```
 
+**PowerShell Logic:**
+```powershell
+# Main Thread
+$QueueInstance = [Fanatec.Shared]::TelemetryQueue
 
+# Background Thread Setup
+$ps = [PowerShell]::Create()
+# Attempting to pass the Reference
+$ps.AddArgument($QueueInstance) 
+$ps.AddScript({
+    param($Q) # Receiving the argument
+    
+    # PROBLEM: $Q is not null, but it appears empty even when Main Thread fills it.
+    # It acts like a disconnected copy or a serialized clone, not a live reference.
+    $f = $null
+    while ($Q.TryDequeue([ref]$f)) { ... } 
+})
+$ps.BeginInvoke()
+```
 
+---
 
+### The Request
 
+1.  **Analyze the Failure:** Why does `AddArgument` with a .NET Object (`ConcurrentQueue`) fail to maintain a live reference across Runspaces in PowerShell 5.1? Is it serializing the object instead of passing a pointer?
+2.  **Evaluate Options:** Please provide 3 distinct solutions to share this data reliably, ranked from "Most Elegant/Robust" to "Quickest Fix."
+    *   *Constraint:* Must be thread-safe.
+    *   *Constraint:* Must work in PS 5.1.
+3.  **Specific Consideration:** Can `SessionStateProxy.SetVariable` be used here to pass a live reference? Or is `[Hashtable]::Synchronized` a better bridge?
+4.  **Recommendation:** Which approach do you recommend for a high-performance game telemetry loop where latency matters?
+
+Please provide code snippets for the recommended fixes applied to the **Architecture B** style.
