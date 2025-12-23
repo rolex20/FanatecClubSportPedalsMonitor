@@ -76,17 +76,17 @@
     .tab-content.active { display: flex; }
 
     /* --- Racing Tab --- */
-    .gauges-container { display: flex; justify-content: center; align-items: center; gap: 60px; flex-grow: 1; padding-bottom: 20px; }
+    .gauges-container { display: flex; justify-content: center; align-items: center; gap: 60px; flex-grow: 1; padding-bottom: 20px; flex-wrap: wrap; }
     .gauge-wrapper { display: flex; flex-direction: column; align-items: center; width: 320px; }
     .gauge-canvas { margin-bottom: 15px; }
     .gauge-labels { display: flex; justify-content: space-between; width: 100%; font-family: monospace; font-size: 1.8em; color: var(--text-muted); font-weight: bold; }
-    .status-strip { display: flex; justify-content: center; gap: 15px; padding: 10px; background: #0f0f16; border-radius: 8px; border: 1px solid #333; margin-bottom: 15px; flex-shrink: 0; }
+    .status-strip { display: flex; justify-content: center; gap: 15px; padding: 10px; background: #0f0f16; border-radius: 8px; border: 1px solid #333; margin: 0 auto 15px auto; flex-shrink: 0; max-width: 1200px; width: 100%; }
     .status-chip { padding: 5px 15px; border-radius: 4px; font-size: 0.9em; font-weight: bold; background: #222; color: #555; text-transform: uppercase; transition: all 0.2s; }
     .status-chip.active-red { background: rgba(255, 51, 51, 0.2); color: var(--neon-red); box-shadow: 0 0 8px var(--neon-red); border: 1px solid var(--neon-red); }
     .status-chip.active-amber { background: rgba(255, 191, 0, 0.2); color: var(--neon-amber); box-shadow: 0 0 8px var(--neon-amber); border: 1px solid var(--neon-amber); }
     .status-chip.active-blue { background: rgba(0, 243, 255, 0.2); color: var(--neon-cyan); box-shadow: 0 0 8px var(--neon-cyan); border: 1px solid var(--neon-cyan); }
     .status-chip.active-green { background: rgba(57, 255, 20, 0.2); color: var(--neon-green); box-shadow: 0 0 8px var(--neon-green); border: 1px solid var(--neon-green); }
-    .ticker-container { height: 100px; background: #000; border: 1px solid #333; border-radius: 4px; padding: 10px; overflow-y: hidden; font-family: monospace; font-size: 1em; flex-shrink: 0; }
+    .ticker-container { height: 100px; background: #000; border: 1px solid #333; border-radius: 4px; padding: 10px; overflow-y: hidden; font-family: monospace; font-size: 1em; flex-shrink: 0; max-width: 1200px; margin: 0 auto; width: 100%; }
     /* FIX: newest-first on Racing ticker (match Signals tab) */
     .ticker-list { display: flex; flex-direction: column; }
     .ticker-item { margin-bottom: 4px; border-bottom: 1px solid #222; padding-bottom: 2px; }
@@ -196,17 +196,24 @@
     <div id="tab-racing" class="tab-content active">
       <div class="gauges-container">
         <div class="gauge-wrapper">
-          <canvas id="canvas-gas" width="300" height="300" class="gauge-canvas"></canvas>
-          <div class="gauge-labels">
-            <span>PHYS: <span id="lbl-gas-phys">0%</span></span>
-            <span>GAME: <span id="lbl-gas-log">0%</span></span>
-          </div>
-        </div>
-        <div class="gauge-wrapper">
           <canvas id="canvas-clutch" width="300" height="300" class="gauge-canvas"></canvas>
           <div class="gauge-labels">
             <span>PHYS: <span id="lbl-clutch-phys">0%</span></span>
             <span>GAME: <span id="lbl-clutch-log">0%</span></span>
+          </div>
+        </div>
+        <div class="gauge-wrapper">
+          <canvas id="canvas-brake" width="300" height="300" class="gauge-canvas"></canvas>
+          <div class="gauge-labels">
+            <span>PHYS: <span id="lbl-brake-phys">0%</span></span>
+            <span>GAME: <span id="lbl-brake-log">0%</span></span>
+          </div>
+        </div>
+        <div class="gauge-wrapper">
+          <canvas id="canvas-gas" width="300" height="300" class="gauge-canvas"></canvas>
+          <div class="gauge-labels">
+            <span>PHYS: <span id="lbl-gas-phys">0%</span></span>
+            <span>GAME: <span id="lbl-gas-log">0%</span></span>
           </div>
         </div>
       </div>
@@ -393,8 +400,8 @@
       activeInterval: 50,
       getCounter: 0,
       frame: {},
-      target: { gasP:0, gasL:0, clP:0, clL:0, lagT:0, lagP:0, lagB:0, lagD:0 },
-      display:{ gasP:0, gasL:0, clP:0, clL:0, lagT:0, lagP:0, lagB:0, lagD:0 },
+      target: { gasP:0, gasL:0, brP:0, brL:0, clP:0, clL:0, lagT:0, lagP:0, lagB:0, lagD:0 },
+      display:{ gasP:0, gasL:0, brP:0, brL:0, clP:0, clL:0, lagT:0, lagP:0, lagB:0, lagD:0 },
       lagHistory: [],
       pedalHistory: [],
       events: [],
@@ -627,14 +634,14 @@
     let els = {};
 
     // Canvas contexts (explicit globals so there’s no “window property” ambiguity)
-    let ctxGas = null, ctxClutch = null, ctxLag = null, ctxWaveGas = null, ctxWaveClutch = null;
+    let ctxGas = null, ctxBrake = null, ctxClutch = null, ctxLag = null, ctxWaveGas = null, ctxWaveClutch = null;
 
     /**
      * 3. TELEMETRY DEFINITIONS
      */
     const TELE_GROUPS = [
-      { title: "Pedal Metrics", keys: ['gas_physical_pct', 'gas_logical_pct', 'clutch_physical_pct', 'clutch_logical_pct'] },
-      { title: "Raw Inputs", keys: ['rawGas', 'gasValue', 'rawClutch', 'clutchValue', 'axisMax', 'axis_normalization_enabled', 'joy_ID', 'joy_Flags'] },
+      { title: "Pedal Metrics", keys: ['gas_physical_pct', 'gas_logical_pct', 'brake_physical_pct', 'brake_logical_pct', 'clutch_physical_pct', 'clutch_logical_pct'] },
+      { title: "Raw Inputs", keys: ['rawGas', 'gasValue', 'rawBrake', 'brakeValue', 'rawClutch', 'clutchValue', 'axisMax', 'axis_normalization_enabled', 'joy_ID', 'joy_Flags'] },
       { title: "Logic State", keys: ['isRacing', 'peakGasInWindow', 'best_estimate_percent', 'lastFullThrottleTime', 'lastGasActivityTime', 'repeatingClutchCount'] },
       { title: "Gas Tuning", keys: ['gas_deadzone_in', 'gas_deadzone_out', 'gas_min_usage_percent', 'gas_window', 'gas_timeout', 'auto_gas_deadzone_enabled'] },
       { title: "Latency (ms)", keys: ['lagTotal', 'fullLoopTime_ms', 'metricLoopProcessMs', 'metricHttpProcessMs', 'metricTtsSpeakMs', 'lagDash', 'activeUpdateInterval'] },
@@ -645,11 +652,15 @@
     const TELE_DEFS = {
       gas_physical_pct: { label: "Gas Phys %", short: "gas_physical_pct: Raw Input", long: "Raw percentage of gas pedal physical travel. (Source: PedMon)" },
       gas_logical_pct:  { label: "Gas Game %",  short: "gas_logical_pct: Game Value", long: "Final gas value sent to the game after deadzones and logic. (Source: PedMon)" },
+      brake_physical_pct: { label: "Brake Phys %", short: "brake_physical_pct: Raw Input", long: "Raw percentage of brake pedal physical travel. (Source: PedMon)" },
+      brake_logical_pct:  { label: "Brake Game %",  short: "brake_logical_pct: Game Value", long: "Final brake value sent to the game after processing. (Source: PedMon)" },
       clutch_physical_pct: { label: "Clutch Phys %", short: "clutch_physical_pct: Raw Input", long: "Raw percentage of clutch physical travel. (Source: PedMon)" },
       clutch_logical_pct:  { label: "Clutch Game %",  short: "clutch_logical_pct: Game Value", long: "Final clutch value sent to the game after processing. (Source: PedMon)" },
 
       rawGas: { label: "Gas Raw", short: "rawGas: Hardware units", long: "Direct value from joyGetPosEx. (Source: PedMon)" },
       gasValue: { label: "Gas Norm", short: "gasValue: Normalized units", long: "Hardware value after inversion correction. (Source: PedMon)" },
+      rawBrake: { label: "Brake Raw", short: "rawBrake: Hardware units", long: "Direct value from JoyAPI. (Source: PedMon)" },
+      brakeValue: { label: "Brake Norm", short: "brakeValue: Normalized units", long: "Hardware value after inversion. (Source: PedMon)" },
       rawClutch: { label: "Clutch Raw", short: "rawClutch: Hardware units", long: "Direct value from JoyAPI. (Source: PedMon)" },
       clutchValue: { label: "Clutch Norm", short: "clutchValue: Normalized units", long: "Hardware value after inversion. (Source: PedMon)" },
       axisMax: { label: "Axis Max", short: "axisMax: Scale", long: "The maximum range of the joystick axis. (Source: PedMon)" },
@@ -1233,7 +1244,7 @@
         // Only flip disconnected after repeated failures (prevents 1-off blips killing the UI)
         if (state.netFailStreak >= 2) {
           state.isConnected = false;
-          state.target = { gasP:0, gasL:0, clP:0, clL:0, lagT:0, lagP:0, lagB:0, lagD:0 };
+          state.target = { gasP:0, gasL:0, brP:0, brL:0, clP:0, clL:0, lagT:0, lagP:0, lagB:0, lagD:0 };
           state.frame = {};
         }
 
@@ -1315,6 +1326,8 @@
       state.target = {
         gasP: f.gas_physical_pct || 0,
         gasL: f.gas_logical_pct || 0,
+        brP: f.brake_physical_pct || 0,
+        brL: f.brake_logical_pct || 0,
         clP: f.clutch_physical_pct || 0,
         clL: f.clutch_logical_pct || 0,
         lagT: tLag,
@@ -1336,6 +1349,7 @@
       pushHistory(state.pedalHistory, {
         t: Date.now(),
         gasP: f.gas_physical_pct || 0,
+        brP: f.brake_physical_pct || 0,
         clP: f.clutch_physical_pct || 0
       }, MAX_CHART_HISTORY);
 
@@ -1363,6 +1377,8 @@
       const l = 0.2;
       state.display.gasP += (state.target.gasP - state.display.gasP) * l;
       state.display.gasL += (state.target.gasL - state.display.gasL) * l;
+      state.display.brP  += (state.target.brP  - state.display.brP ) * l;
+      state.display.brL  += (state.target.brL  - state.display.brL ) * l;
       state.display.clP  += (state.target.clP  - state.display.clP ) * l;
       state.display.clL  += (state.target.clL  - state.display.clL ) * l;
 
@@ -1408,11 +1424,14 @@
     }
 
     function renderRacing() {
-      drawDualGauge(ctxGas, "GAS", state.display.gasP, state.display.gasL);
       drawDualGauge(ctxClutch, "CLUTCH", state.display.clP, state.display.clL);
+      drawDualGauge(ctxBrake, "BRAKE", state.display.brP, state.display.brL);
+      drawDualGauge(ctxGas, "GAS", state.display.gasP, state.display.gasL);
 
       safeSetText(els.lblGasPhys, state.display.gasP.toFixed(0) + "%");
       safeSetText(els.lblGasLog,  state.display.gasL.toFixed(0) + "%");
+      safeSetText(els.lblBrakePhys, state.display.brP.toFixed(0) + "%");
+      safeSetText(els.lblBrakeLog,  state.display.brL.toFixed(0) + "%");
       safeSetText(els.lblClutchPhys, state.display.clP.toFixed(0) + "%");
       safeSetText(els.lblClutchLog,  state.display.clL.toFixed(0) + "%");
 
@@ -1584,9 +1603,12 @@
         hdrDsh: document.getElementById('hdr-dsh-lag'),
 
         cvsGas: document.getElementById('canvas-gas'),
+        cvsBrake: document.getElementById('canvas-brake'),
         cvsClutch: document.getElementById('canvas-clutch'),
         lblGasPhys: document.getElementById('lbl-gas-phys'),
         lblGasLog: document.getElementById('lbl-gas-log'),
+        lblBrakePhys: document.getElementById('lbl-brake-phys'),
+        lblBrakeLog: document.getElementById('lbl-brake-log'),
         lblClutchPhys: document.getElementById('lbl-clutch-phys'),
         lblClutchLog: document.getElementById('lbl-clutch-log'),
 
@@ -1614,6 +1636,7 @@
       };
 
       ctxGas = els.cvsGas ? els.cvsGas.getContext('2d') : null;
+      ctxBrake = els.cvsBrake ? els.cvsBrake.getContext('2d') : null;
       ctxClutch = els.cvsClutch ? els.cvsClutch.getContext('2d') : null;
       ctxLag = els.cvsLag ? els.cvsLag.getContext('2d') : null;
       ctxWaveGas = els.cvsWaveGas ? els.cvsWaveGas.getContext('2d') : null;
