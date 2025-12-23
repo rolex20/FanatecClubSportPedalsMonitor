@@ -400,8 +400,8 @@
       activeInterval: 50,
       getCounter: 0,
       frame: {},
-      target: { gasP:0, gasL:0, brP:0, brL:0, clP:0, clL:0, lagT:0, lagP:0, lagB:0, lagD:0 },
-      display:{ gasP:0, gasL:0, brP:0, brL:0, clP:0, clL:0, lagT:0, lagP:0, lagB:0, lagD:0 },
+      target: { gasP:0, gasL:0, brP:0, brL:0, brRaw:0, brNorm:0, clP:0, clL:0, lagT:0, lagP:0, lagB:0, lagD:0 },
+      display:{ gasP:0, gasL:0, brP:0, brL:0, brRaw:0, brNorm:0, clP:0, clL:0, lagT:0, lagP:0, lagB:0, lagD:0 },
       lagHistory: [],
       pedalHistory: [],
       events: [],
@@ -1244,7 +1244,7 @@
         // Only flip disconnected after repeated failures (prevents 1-off blips killing the UI)
         if (state.netFailStreak >= 2) {
           state.isConnected = false;
-          state.target = { gasP:0, gasL:0, brP:0, brL:0, clP:0, clL:0, lagT:0, lagP:0, lagB:0, lagD:0 };
+          state.target = { gasP:0, gasL:0, brP:0, brL:0, brRaw:0, brNorm:0, clP:0, clL:0, lagT:0, lagP:0, lagB:0, lagD:0 };
           state.frame = {};
         }
 
@@ -1328,6 +1328,8 @@
         gasL: f.gas_logical_pct || 0,
         brP: f.brake_physical_pct || 0,
         brL: f.brake_logical_pct || 0,
+        brRaw: f.rawBrake || 0,
+        brNorm: f.brakeValue || 0,
         clP: f.clutch_physical_pct || 0,
         clL: f.clutch_logical_pct || 0,
         lagT: tLag,
@@ -1379,6 +1381,8 @@
       state.display.gasL += (state.target.gasL - state.display.gasL) * l;
       state.display.brP  += (state.target.brP  - state.display.brP ) * l;
       state.display.brL  += (state.target.brL  - state.display.brL ) * l;
+      state.display.brRaw = state.target.brRaw;
+      state.display.brNorm = state.target.brNorm;
       state.display.clP  += (state.target.clP  - state.display.clP ) * l;
       state.display.clL  += (state.target.clL  - state.display.clL ) * l;
 
