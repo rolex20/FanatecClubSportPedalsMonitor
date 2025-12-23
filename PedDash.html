@@ -264,12 +264,12 @@
           <h3>Polling Control</h3>
           <div class="form-row">
             <label>Update Interval (ms) - Set 0 for Smart</label>
-            <input type="number" id="cfg-interval" value="50" onchange="updateConfig('UPDATE_INTERVAL_MS', this.value)">
+            <input type="number" id="cfg-interval" onchange="updateConfig('UPDATE_INTERVAL_MS', this.value)">
           </div>
           <div class="form-row">
             <label>Smart Algorithm Mode</label>
             <select id="cfg-algo" onchange="updateConfig('ALGO_MODE', this.value)">
-              <option value="SMOOTH_CONVERGENCE" selected>SMOOTH_CONVERGENCE (Recommended)</option>
+              <option value="SMOOTH_CONVERGENCE">SMOOTH_CONVERGENCE (Recommended)</option>
               <option value="FRAME_LOCK">FRAME_LOCK</option>
               <option value="ALGO_DIGITAL_PLL">ALGO_DIGITAL_PLL (ChatGPT)</option>
               <option value="ALGO_INTEGRAL_FLOW">ALGO_INTEGRAL_FLOW</option>
@@ -282,15 +282,15 @@
           </div>
           <div class="form-row">
             <label>Manual Update Factor</label>
-            <input type="number" step="0.01" id="cfg-factor" value="1.00" onchange="updateConfig('MANUAL_UPDATE_FACTOR', this.value)">
+            <input type="number" step="0.01" id="cfg-factor" onchange="updateConfig('MANUAL_UPDATE_FACTOR', this.value)">
           </div>
         </div>
         <div class="config-group">
           <h3>System & Debug</h3>
-          <div class="form-row row-inline"><input type="checkbox" id="cfg-bounds" checked onchange="updateConfig('USE_BOUNDS_CHECK', this.checked)"><label>Use Bounds Check</label></div>
-          <div class="form-row row-inline"><input type="checkbox" id="cfg-debug" checked onchange="updateConfig('ENABLE_ALGO_DEBUG', this.checked)"><label>Algorithm Debug Logging</label></div>
-          <div class="form-row row-inline"><input type="checkbox" id="cfg-empty" checked onchange="updateConfig('LOG_EMPTY_FRAMES', this.checked)"><label>Log Empty Frames</label></div>
-          <div class="form-row"><label>Max History (lines)</label><input type="number" id="cfg-history" value="1000" onchange="updateConfig('MAX_HISTORY_LINES', this.value)"></div>
+          <div class="form-row row-inline"><input type="checkbox" id="cfg-bounds" onchange="updateConfig('USE_BOUNDS_CHECK', this.checked)"><label>Use Bounds Check</label></div>
+          <div class="form-row row-inline"><input type="checkbox" id="cfg-debug" onchange="updateConfig('ENABLE_ALGO_DEBUG', this.checked)"><label>Algorithm Debug Logging</label></div>
+          <div class="form-row row-inline"><input type="checkbox" id="cfg-empty" onchange="updateConfig('LOG_EMPTY_FRAMES', this.checked)"><label>Log Empty Frames</label></div>
+          <div class="form-row"><label>Max History (lines)</label><input type="number" id="cfg-history" onchange="updateConfig('MAX_HISTORY_LINES', this.value)"></div>
         </div>
       </div>
     </div>
@@ -319,6 +319,29 @@
       LOG_EMPTY_FRAMES: true,
       MAX_HISTORY_LINES: 1000
     };
+
+    function initConfigControls() {
+      const intervalEl = document.getElementById('cfg-interval');
+      if (intervalEl) intervalEl.value = config.UPDATE_INTERVAL_MS ?? '';
+
+      const algoEl = document.getElementById('cfg-algo');
+      if (algoEl) algoEl.value = config.ALGO_MODE ?? '';
+
+      const factorEl = document.getElementById('cfg-factor');
+      if (factorEl) factorEl.value = config.MANUAL_UPDATE_FACTOR ?? '';
+
+      const boundsEl = document.getElementById('cfg-bounds');
+      if (boundsEl) boundsEl.checked = Boolean(config.USE_BOUNDS_CHECK);
+
+      const debugEl = document.getElementById('cfg-debug');
+      if (debugEl) debugEl.checked = Boolean(config.ENABLE_ALGO_DEBUG);
+
+      const emptyEl = document.getElementById('cfg-empty');
+      if (emptyEl) emptyEl.checked = Boolean(config.LOG_EMPTY_FRAMES);
+
+      const historyEl = document.getElementById('cfg-history');
+      if (historyEl) historyEl.value = config.MAX_HISTORY_LINES ?? '';
+    }
 
     const BRIDGE_URL = "http://localhost:8181/";
     const MAX_CHART_HISTORY = 300;
@@ -853,6 +876,8 @@
         // If disabled, keep derived telemetry from going stale in UI
         if (!config.ENABLE_ALGO_DEBUG) clearAlgoDerivedTelemetry();
       }
+
+      initConfigControls();
     }
 
     function toggleChip(el, act, cls) { if (el) el.classList.toggle(cls, Boolean(act)); }
@@ -1593,6 +1618,8 @@
       ctxLag = els.cvsLag ? els.cvsLag.getContext('2d') : null;
       ctxWaveGas = els.cvsWaveGas ? els.cvsWaveGas.getContext('2d') : null;
       ctxWaveClutch = els.cvsWaveClutch ? els.cvsWaveClutch.getContext('2d') : null;
+
+      initConfigControls();
 
       // Initialize ring and metrics
       initAlgoRing(config.MAX_HISTORY_LINES);
