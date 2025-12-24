@@ -358,11 +358,11 @@
     const EVENT_MESSAGES = {
       gas_alert_triggered: {
         type: "Alert",
-        message: f => `Gas Drift: ${f.percentReached ?? ""}%`
+        message: f => `Gas Pedal Only Reached : ${f.percentReached ?? ""}% (Drift Issue)`
       },
       clutch_alert_triggered: {
         type: "Warn",
-        message: () => "Rudder Noise"
+        message: () => "Rudder Noise Issue"
       },
       controller_disconnected: {
         type: "Alert",
@@ -558,6 +558,9 @@
       state.frame.algoSuccesses = algoMetrics.successes;
       state.frame.algoAccuracyPct = acc;
       state.frame.algoRunTimeSec = runTimeSec;
+
+      // --- CHANGE START: Exit here if the flag is FALSE (skips the heavy logging) ---
+      if (!config.ENABLE_ALGO_DEBUG) return;		
 
       // Build compact per-sample debug record
       const d = new Date();
@@ -1284,7 +1287,10 @@
       state.activeInterval = sleep;
 
       // Algo scoring + debug ring buffer (only when enabled)
-      if (config.ENABLE_ALGO_DEBUG) {
+      // if (config.ENABLE_ALGO_DEBUG) {
+	  // Now we always do the math
+	  const ALWAYS_DO_MATH = true;
+	  if (ALWAYS_DO_MATH) {
         tickAlgoMetrics(rec, tP, prevInterval, sleep, sleepRaw, sleepPostFactor, usedSmart, algoCrashMsg);
       } else {
         clearAlgoDerivedTelemetry();
@@ -1505,7 +1511,8 @@
       if (group.title !== 'Diagnostics') return group.keys;
 
       // Only add algo scoring metrics when debug is enabled (requested behavior)
-      if (!config.ENABLE_ALGO_DEBUG) return group.keys;
+	  // Now we always show the algo scoring metrics
+      // if (!config.ENABLE_ALGO_DEBUG) return group.keys;
 
       // Insert right after FRAMES RX card (most relevant location)
       const out = [];
