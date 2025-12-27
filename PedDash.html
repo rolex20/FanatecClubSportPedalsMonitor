@@ -827,7 +827,14 @@
     /**
      * 5. UTILS
      */
-    function safeSetText(el, text) { if (el) el.textContent = text; }
+    /* function safeSetText(el, text) { if (el) el.textContent = text; } */
+	/* Optimization */
+	function safeSetText(el, text) { 
+	      // Only write to the DOM if the value actually changed
+	      if (el && el.textContent !== text) {
+	        el.textContent = text; 
+	      }
+	    }	  
 
     // FIXED: pushHistory was missing (primary crash)
     function pushHistory(arr, item, limit = MAX_CHART_HISTORY) {
@@ -1061,11 +1068,18 @@
 
       const lA = 0.75*Math.PI + (1.5*Math.PI*(Math.max(0, Math.min(100, log))/100));
       const color = (log===0) ? '#fff' : (log>=99 ? '#ff3333' : '#39ff14');
+
+		
       ctx.strokeStyle = color;
-      ctx.shadowBlur = 15;
-      ctx.shadowColor = color;
+	// --- OPTIMIZATION: COMMENT OUT THESE 2 LINES ---
+	// ctx.shadowBlur = 15;
+	// ctx.shadowColor = color;
+	// -----------------------------------------------
+		
       ctx.beginPath(); ctx.arc(cx,cy,rI,0.75*Math.PI,lA); ctx.stroke();
-      ctx.shadowBlur = 0;
+
+	// --- OPTIMIZATION: COMMENT OUT THESE 1 LINE ---		
+	// ctx.shadowBlur = 0; // Remove this too if you removed the lines above
 
       ctx.fillStyle = color;
       ctx.font = "bold 80px monospace";
@@ -1362,6 +1376,12 @@
       }, MAX_CHART_HISTORY);
 
       calcAverages();
+
+	// --- SAFETY WAKE-UP ---
+	// Force the renderer to run at least one frame 
+	// ensuring text flags/alerts update even if pedals are still.
+	isIdle = false; 
+		
     }
 
     function updateNonFrameMetrics(start) {
@@ -1378,9 +1398,71 @@
       state.frame.activeUpdateInterval = state.activeInterval;
     }
 
+/**
+ * 8. RENDERING
+ */
+// --- HYBRID OPTIMIZATION: Variables ---
+let lastDrawTime = 0;
+let isIdle = false;
+const TARGET_FPS = 30;         // Cap animations at 30 FPS
+const FRAME_INTERVAL = 1000 / TARGET_FPS;
+
+function renderLoop(timestamp) {
+  // 1. Keep the heartbeat alive (Browser calls this at 144Hz)
+  requestAnimationFrame(renderLoop);
+
+  // 2. THROTTLE: Exact 30 FPS Limit
+  // If not enough time has passed since the last draw, exit immediately.
+  // This effectively ignores 114 out of 144 frames per second.
+  if (timestamp - lastDrawTime < FRAME_INTERVAL) return;
+
+  // 3. SLEEP CHECK: Are the needles moving?
+  // We calculate the difference between Target (Data) and Display (Screen)
+  // If the difference is tiny (< 0.1), we assume visual silence.
+  const dGas = Math.abs(state.target.gasP - state.display.gasP);
+  const dBrake = Math.abs(state.target.brP - state.display.brP);
+  const dClutch = Math.abs(state.target.clP - state.display.clP);
+  const dLag = Math.abs(state.target.lagT - state.display.lagT); // check lag ticker too
+
+  // "Settled" means we are close enough to the target value
+  const isSettled = (dGas < 0.1 && dBrake < 0.1 && dClutch < 0.1 && dLag < 1.0);
+
+  // 4. DECISION:
+  // If we are Settled AND Connected AND were already Idle last frame...
+  // ...we DO NOT DRAW. (0% GPU usage here)
+  if (isSettled && state.isConnected && isIdle) {
+    return; 
+  }
+
+  // 5. UPDATE & DRAW (The expensive part)
+  lastDrawTime = timestamp; // Reset the 30 FPS timer
+
+  const l = 0.2; // Interpolation factor
+  state.display.gasP += (state.target.gasP - state.display.gasP) * l;
+  state.display.gasL += (state.target.gasL - state.display.gasL) * l;
+  state.display.brP  += (state.target.brP  - state.display.brP ) * l;
+  state.display.brL  += (state.target.brL  - state.display.brL ) * l;
+  state.display.brRaw = state.target.brRaw;
+  state.display.brNorm = state.target.brNorm;
+  state.display.clP  += (state.target.clP  - state.display.clP ) * l;
+  state.display.clL  += (state.target.clL  - state.display.clL ) * l;
+
+  state.display.lagT = state.target.lagT;
+  state.display.lagP = state.target.lagP;
+  state.display.lagB = state.target.lagB;
+  state.display.lagD = state.target.lagD;
+
+  renderUI();
+
+  // 6. UPDATE STATUS
+  // If we are settled now, mark idle as true so the NEXT frame can sleep.
+  isIdle = isSettled;
+}	  
+
     /**
      * 8. RENDERING
      */
+/*
     function renderLoop() {
       const l = 0.2;
       state.display.gasP += (state.target.gasP - state.display.gasP) * l;
@@ -1401,6 +1483,7 @@
       renderUI();
       requestAnimationFrame(renderLoop);
     }
+*/
 
     function renderUI() {
       // Header status
