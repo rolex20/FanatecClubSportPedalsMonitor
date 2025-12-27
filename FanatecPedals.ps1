@@ -446,10 +446,20 @@ namespace Fanatec {
 "@
 
 if (-not ([System.Management.Automation.PSTypeName]'Fanatec.Hardware').Type) {
-    Add-Type -TypeDefinition $Source -Language CSharp -CompilerOptions "/optimize"
+	# Create the CompilerParameters object explicitly
+    $Params = New-Object System.CodeDom.Compiler.CompilerParameters
+    
+    # Set the optimization flag here
+    $Params.CompilerOptions = "/optimize"
+
+    # Pass the OBJECT to the -CompilerParameters argument
+    Add-Type -TypeDefinition $Source -CompilerParameters $Params	
+#    Add-Type -TypeDefinition $Source -Language CSharp -CompilerOptions "/optimize"
 } else {
     Write-Warning "Using existing C# definition. If you modified the C# code, please restart PowerShell."
 }
+
+
 
 # -----------------------------------------------------------------------------
 # SECTION 5: HELPER FUNCTIONS
@@ -604,7 +614,7 @@ function Create-HttpServerInstance {
     
     $ps.AddScript({
         $listener = New-Object System.Net.HttpListener
-        $listener.Prefixes.Add("http://localhost:8181/")
+        $listener.Prefixes.Add("http://127.0.0.1:8181/")
         $listener.Start()
         $sw = [System.Diagnostics.Stopwatch]::New()
         $localBatchId = 0
@@ -616,14 +626,24 @@ function Create-HttpServerInstance {
                     $context = $listener.GetContext()
                     $sw.Restart()
                     $request  = $context.Request
-                    $response = $context.Response
-
-                    # Check if the GET request contains "QUIT"
-                    if ($request.HttpMethod -eq "GET" -and $request.RawUrl -match "QUIT") {
-                        # Example action: log and set StopSignal
-                        # Add-Content -Path $LogPath -Value "QUIT detected at $(Get-Date)"
-                        [Fanatec.Shared]::StopSignal = $true
-                    }
+                    $response = $context.Response				
+					
+					# Early QUIT check and short-circuit
+					if ($request.HttpMethod -eq "GET" -and $request.RawUrl.Contains("QUIT")) {
+						# log and set StopSignal
+						# Add-Content -Path $LogPath -Value "QUIT detected at $(Get-Date)"					
+						[Fanatec.Shared]::StopSignal = $true
+						$response.StatusCode = 200
+						$response.StatusDescription = "OK"
+						$jsonBytes = [System.Text.Encoding]::UTF8.GetBytes('{"status":"quit received"}')
+						$response.ContentType = "application/json; charset=utf-8"
+						$response.ContentLength64 = $jsonBytes.Length
+						$response.OutputStream.Write($jsonBytes, 0, $jsonBytes.Length)
+						$response.Close()
+						$listener.Stop()
+						$listener.Dispose()
+						break  # exit the loop
+					}
 
 
                     $response.AddHeader("Access-Control-Allow-Origin", "*")
@@ -664,7 +684,8 @@ function Create-HttpServerInstance {
                     
                     $sw.Stop()
                     # Best effort metric write-back
-                    try { [Fanatec.Shared]::LastHttpTimeMs = $sw.Elapsed.TotalMilliseconds } catch {}
+                    # try { [Fanatec.Shared]::LastHttpTimeMs = $sw.Elapsed.TotalMilliseconds } catch {}
+					[Fanatec.Shared]::LastHttpTimeMs = $sw.Elapsed.TotalMilliseconds
                     
                 } catch {
                      # Log inner loop errors
@@ -673,7 +694,7 @@ function Create-HttpServerInstance {
             }
         } 
         catch {
-             # Log fatal crash
+             # Log  crash
              Add-Content -Path $LogPath -Value ("[{0}] FATAL: {1}" -f [DateTime]::Now, $_)
         }
         finally { 
@@ -1236,7 +1257,17 @@ finally {
     [Fanatec.Shared]::StopSignal = $true
 
 	# GET request to force the web server to quit
-	if ($HttpInstance) { $resp = Invoke-RestMethod -Uri "http://localhost:8181/QUIT" -Method GET }
+	if ($HttpInstance) { 
+		Write-Host "Sending HTTP/QUIT ..."
+		try {
+			Invoke-RestMethod -Uri "http://127.0.0.1:8181/QUIT" -Method GET  -ErrorAction SilentlyContinue | Out-Null
+		} catch 
+		{
+			# Silently 
+			Write-Host ("[{0}] ERROR: {1}" -f [DateTime]::Now, $_)
+		}
+		Start-Sleep 1
+	}
 
     if ($Synth) { 
 		Write-Host "Synth.Dispose() ..."
@@ -1254,10 +1285,7 @@ finally {
 		$HttpInstance.Dispose()
 		Write-Host "Nulling HttpInstance ..."
 		$HttpInstance = $null
-		
     }
-
-
 
 
     # Force Garbage Collection (The "Nuclear" Cleanup)
