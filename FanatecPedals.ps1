@@ -300,6 +300,53 @@ namespace Fanatec {
         public PedalMonState Clone() {
             return (PedalMonState)this.MemberwiseClone();
         }
+
+		// --- NEW PERFORMANCE METHOD (INLINED) ---
+        public void UpdatePercentages() {
+            // 1. Physical Percentages (Raw value vs Axis Max)
+            if (axisMax > 0) {
+                gas_physical_pct    = (uint)(100u * gasValue / axisMax);
+                clutch_physical_pct = (uint)(100u * clutchValue / axisMax);
+                brake_physical_pct  = (uint)(100u * brakeValue / axisMax);
+            } else {
+                gas_physical_pct = 0; 
+				clutch_physical_pct = 0; 
+				brake_physical_pct = 0;
+            }
+
+            // 2. Logical Percentages (Calculated vs Deadzones)
+            // Optimization: Calculate the denominator once per frame. 
+            // If config is broken (Min >= Max), range is 0 to prevent divide-by-zero errors.
+            uint range = (gasFullMin > gasIdleMax) ? (gasFullMin - gasIdleMax) : 0;
+
+            // --- GAS ---
+            if (range == 0 || gasValue <= gasIdleMax) {
+                gas_logical_pct = 0;
+            } else if (gasValue >= gasFullMin) {
+                gas_logical_pct = 100;
+            } else {
+                // Inline math: (100 * (Value - Idle)) / Range
+                gas_logical_pct = (uint)(100 * (gasValue - gasIdleMax) / range);
+            }
+
+            // --- CLUTCH ---
+            if (range == 0 || clutchValue <= gasIdleMax) {
+                clutch_logical_pct = 0;
+            } else if (clutchValue >= gasFullMin) {
+                clutch_logical_pct = 100;
+            } else {
+                clutch_logical_pct = (uint)(100 * (clutchValue - gasIdleMax) / range);
+            }
+
+            // --- BRAKE ---
+            if (range == 0 || brakeValue <= gasIdleMax) {
+                brake_logical_pct = 0;
+            } else if (brakeValue >= gasFullMin) {
+                brake_logical_pct = 100;
+            } else {
+                brake_logical_pct = (uint)(100 * (brakeValue - gasIdleMax) / range);
+            }
+        }		
     }
 
     public static class Shared {
