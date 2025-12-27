@@ -1020,6 +1020,9 @@ try {
              }
         }
 
+        $State.UpdatePercentages() # --- Percentages (Moved to C# for performance) ---
+
+<#
         # --- Percentages ---
         $State.gas_physical_pct = [uint32](100 * $State.gasValue / $AxisMax)
         $State.clutch_physical_pct = [uint32](100 * $State.clutchValue / $AxisMax)
@@ -1031,7 +1034,7 @@ try {
         $State.clutch_logical_pct = Compute-LogicalPct -Value $State.clutchValue -IdleMax $GasIdleMax -FullMin $GasFullMin
         $State.brake_logical_pct  = Compute-LogicalPct -Value $State.brakeValue  -IdleMax $GasIdleMax -FullMin $GasFullMin
         
-<#
+
 
         # Logical Pct Calc (What the GAME will report if deadzones are equally configured)
         if ($State.gasValue -le $GasIdleMax) { $State.gas_logical_pct = 0 }
