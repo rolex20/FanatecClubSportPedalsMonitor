@@ -446,7 +446,7 @@ namespace Fanatec {
 "@
 
 if (-not ([System.Management.Automation.PSTypeName]'Fanatec.Hardware').Type) {
-    Add-Type -TypeDefinition $Source -Language CSharp
+    Add-Type -TypeDefinition $Source -Language CSharp -CompilerOptions "/optimize"
 } else {
     Write-Warning "Using existing C# definition. If you modified the C# code, please restart PowerShell."
 }
