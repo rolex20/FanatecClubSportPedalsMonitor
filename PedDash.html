@@ -1046,6 +1046,17 @@
       window.URL.revokeObjectURL(url);
     }
 
+
+// Optimizatin: create cached gradient
+const cachedGrad = (function() {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  const grad = ctx.createLinearGradient(0, 0, 300, 0); // Match canvas width
+  grad.addColorStop(0, '#00f3ff');
+  grad.addColorStop(1, '#0088aa');
+  return grad;
+})();
+
     /**
      * 6. DRAWING
      */
@@ -1063,7 +1074,10 @@
       const grad = ctx.createLinearGradient(0,0,w,0);
       grad.addColorStop(0,'#00f3ff');
       grad.addColorStop(1,'#0088aa');
-      ctx.strokeStyle = phys>0 ? grad : '#222';
+      
+	  // Optimization, use a cached gradient
+	  // ctx.strokeStyle = phys>0 ? grad : '#222';
+	  ctx.strokeStyle = phys > 0 ? cachedGrad : '#222'; // Use cached
       if (phys > 0) { ctx.beginPath(); ctx.arc(cx,cy,rO,0.75*Math.PI,pA); ctx.stroke(); }
 
       const lA = 0.75*Math.PI + (1.5*Math.PI*(Math.max(0, Math.min(100, log))/100));
@@ -1437,7 +1451,7 @@ function renderLoop(timestamp) {
   // 5. UPDATE & DRAW (The expensive part)
   lastDrawTime = timestamp; // Reset the 30 FPS timer
 
-  const l = 0.2; // Interpolation factor
+  const l = 0.8; // Interpolation factor lerp
   state.display.gasP += (state.target.gasP - state.display.gasP) * l;
   state.display.gasL += (state.target.gasL - state.display.gasL) * l;
   state.display.brP  += (state.target.brP  - state.display.brP ) * l;
