@@ -57,6 +57,7 @@ param (
     [Alias("j")][int]$JoystickID = 17,        # Default 17 forces auto-detect search
     [Alias("v")][string]$VendorId,            # Hex String (queted string e.g. "0EB7")
     [Alias("p")][string]$ProductId,           # Hex String (quoted string e.g. "1839")
+    [string]$ConfigFile,
 
     # --- FEATURE FLAGS ---
     [switch]$MonitorClutch,
@@ -77,6 +78,128 @@ param (
     # --- HELP ---
     [switch]$Help
 )
+
+# -----------------------------------------------------------------------------
+# SECTION 0: CONFIGURATION FILE SUPPORT
+# -----------------------------------------------------------------------------
+$ConfigKeysApplied = [System.Collections.Generic.HashSet[string]]::new()
+
+function ConvertTo-BooleanValue {
+    param([object]$Value)
+    if ($Value -is [string]) {
+        $normalized = $Value.Trim().ToLower()
+        return @('1', 'true', 'yes', 'y', 'on') -contains $normalized
+    }
+    return [bool]$Value
+}
+
+function Import-IniFile {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -Path $Path -PathType Leaf)) {
+        throw "Config file not found: $Path"
+    }
+
+    $result = @{}
+    foreach ($line in Get-Content -Path $Path) {
+        $trimmed = $line.Trim()
+        if ([string]::IsNullOrWhiteSpace($trimmed)) { continue }
+        if ($trimmed.StartsWith(';')) { continue }
+        if ($trimmed.StartsWith('[') -and $trimmed.EndsWith(']')) { continue }
+
+        $pair = $trimmed.Split('=', 2)
+        if ($pair.Count -lt 2) { continue }
+
+        $key = $pair[0].Trim()
+        $value = $pair[1].Trim()
+        if (-not [string]::IsNullOrWhiteSpace($key)) {
+            $result[$key] = $value
+        }
+    }
+
+    return $result
+}
+
+function Set-ConfigValue {
+    param(
+        [string]$Name,
+        [string]$Value,
+        [string]$Type
+    )
+
+    if ($PSBoundParameters.ContainsKey($Name)) { return }
+
+    switch ($Type) {
+        'bool'   { $converted = ConvertTo-BooleanValue $Value }
+        'string' { $converted = [string]$Value }
+        default  { $converted = [int]$Value }
+    }
+
+    Set-Variable -Name $Name -Scope Script -Value $converted
+    [void]$ConfigKeysApplied.Add($Name)
+    Write-Verbose "Config: $Name set to $converted"
+}
+
+function Apply-ConfigFile {
+    param([string]$Path)
+
+    $config = Import-IniFile -Path $Path
+    $mapping = @{
+        'sleeptime'           = @{ Type = 'int';    Name = 'SleepTime' }
+        'margin'              = @{ Type = 'int';    Name = 'Margin' }
+        'clutchrepeat'        = @{ Type = 'int';    Name = 'ClutchRepeat' }
+        'noaxisnormalization' = @{ Type = 'bool';   Name = 'NoAxisNormalization' }
+        'gasdeadzonein'       = @{ Type = 'int';    Name = 'GasDeadzoneIn' }
+        'gasdeadzoneout'      = @{ Type = 'int';    Name = 'GasDeadzoneOut' }
+        'brakedeadzonein'     = @{ Type = 'int';    Name = 'BrakeDeadzoneIn' }
+        'brakedeadzoneout'    = @{ Type = 'int';    Name = 'BrakeDeadzoneOut' }
+        'clutchdeadzonein'    = @{ Type = 'int';    Name = 'ClutchDeadzoneIn' }
+        'clutchdeadzoneout'   = @{ Type = 'int';    Name = 'ClutchDeadzoneOut' }
+        'gaswindow'           = @{ Type = 'int';    Name = 'GasWindow' }
+        'gascooldown'         = @{ Type = 'int';    Name = 'GasCooldown' }
+        'gastimeout'          = @{ Type = 'int';    Name = 'GasTimeout' }
+        'gasminusage'         = @{ Type = 'int';    Name = 'GasMinUsage' }
+        'estimategasdeadzone' = @{ Type = 'bool';   Name = 'EstimateGasDeadzone' }
+        'autogasdeadzonemin'  = @{ Type = 'int';    Name = 'AutoGasDeadzoneMin' }
+        'joystickid'          = @{ Type = 'int';    Name = 'JoystickID' }
+        'vendorid'            = @{ Type = 'string'; Name = 'VendorId' }
+        'productid'           = @{ Type = 'string'; Name = 'ProductId' }
+        'monitorclutch'       = @{ Type = 'bool';   Name = 'MonitorClutch' }
+        'monitorgas'          = @{ Type = 'bool';   Name = 'MonitorGas' }
+        'telemetry'           = @{ Type = 'bool';   Name = 'Telemetry' }
+        'tts'                 = @{ Type = 'bool';   Name = 'Tts' }
+        'notts'               = @{ Type = 'bool';   Name = 'NoTts' }
+        'noconsolebanner'     = @{ Type = 'bool';   Name = 'NoConsoleBanner' }
+        'debugraw'            = @{ Type = 'bool';   Name = 'DebugRaw' }
+        'iterations'          = @{ Type = 'int';    Name = 'Iterations' }
+        'joyflags'            = @{ Type = 'int';    Name = 'JoyFlags' }
+        'idle'                = @{ Type = 'bool';   Name = 'Idle' }
+        'belownormal'         = @{ Type = 'bool';   Name = 'BelowNormal' }
+        'affinitymask'        = @{ Type = 'string'; Name = 'AffinityMask' }
+        'verbose'             = @{ Type = 'bool';   Name = 'Verbose' }
+    }
+
+    foreach ($entry in $config.GetEnumerator()) {
+        $key = $entry.Key
+        $value = $entry.Value
+        $normalizedKey = $key.Trim().ToLower()
+
+        if ($mapping.ContainsKey($normalizedKey)) {
+            $target = $mapping[$normalizedKey]
+            $type = $target.Type
+            $name = $target.Name
+
+            if ($name -eq 'Verbose' -and -not $PSBoundParameters.ContainsKey('Verbose')) {
+                if (ConvertTo-BooleanValue $value) { $Script:VerbosePreference = 'Continue' }
+                continue
+            }
+
+            Set-ConfigValue -Name $name -Value $value -Type $type
+        } else {
+            Write-Verbose "Config: Ignoring unknown key '$key'"
+        }
+    }
+}
 
 # -----------------------------------------------------------------------------
 # SECTION 1: AUTO-HELP LOGIC
@@ -103,6 +226,7 @@ Usage: .\FanatecPedals.ps1 [options]
 
    General:
        -Help               Show this help message and exit.
+       -ConfigFile PATH    Load options from an .ini file. Command line arguments override file values.
        -Verbose            Enable verbose logging (prints axis values, config).
        -JoystickID N       Initial Joystick ID (0-15).
        -Iterations N       Number of loops (0 = Infinite).
@@ -145,11 +269,21 @@ Usage: .\FanatecPedals.ps1 [options]
     exit
 }
 
+# Apply configuration file (command line args still override)
+if ($ConfigFile) {
+    Apply-ConfigFile -Path $ConfigFile
+}
+
 # Align brake/clutch defaults to gas deadzones unless explicitly provided (preserves legacy behavior)
-if (-not $PSBoundParameters.ContainsKey('BrakeDeadzoneIn')) { $BrakeDeadzoneIn = $GasDeadzoneIn }
-if (-not $PSBoundParameters.ContainsKey('BrakeDeadzoneOut')) { $BrakeDeadzoneOut = $GasDeadzoneOut }
-if (-not $PSBoundParameters.ContainsKey('ClutchDeadzoneIn')) { $ClutchDeadzoneIn = $GasDeadzoneIn }
-if (-not $PSBoundParameters.ContainsKey('ClutchDeadzoneOut')) { $ClutchDeadzoneOut = $GasDeadzoneOut }
+$hasBrakeInConfig = $ConfigKeysApplied.Contains('BrakeDeadzoneIn')
+$hasBrakeOutConfig = $ConfigKeysApplied.Contains('BrakeDeadzoneOut')
+$hasClutchInConfig = $ConfigKeysApplied.Contains('ClutchDeadzoneIn')
+$hasClutchOutConfig = $ConfigKeysApplied.Contains('ClutchDeadzoneOut')
+
+if ((-not $PSBoundParameters.ContainsKey('BrakeDeadzoneIn')) -and -not $hasBrakeInConfig) { $BrakeDeadzoneIn = $GasDeadzoneIn }
+if ((-not $PSBoundParameters.ContainsKey('BrakeDeadzoneOut')) -and -not $hasBrakeOutConfig) { $BrakeDeadzoneOut = $GasDeadzoneOut }
+if ((-not $PSBoundParameters.ContainsKey('ClutchDeadzoneIn')) -and -not $hasClutchInConfig) { $ClutchDeadzoneIn = $GasDeadzoneIn }
+if ((-not $PSBoundParameters.ContainsKey('ClutchDeadzoneOut')) -and -not $hasClutchOutConfig) { $ClutchDeadzoneOut = $GasDeadzoneOut }
 
 # -----------------------------------------------------------------------------
 # SECTION 2: TEXT STRINGS
