@@ -40,6 +40,10 @@ param (
     # --- GAS TUNING DEFAULTS ---
     [Alias("gas-deadzone-in")][int]$GasDeadzoneIn = 5,      # % Idle
     [Alias("gas-deadzone-out")][int]$GasDeadzoneOut = 93,    # % Full Throttle
+    [Alias("brake-deadzone-in")][int]$BrakeDeadzoneIn = 5,   # % Idle (brake)
+    [Alias("brake-deadzone-out")][int]$BrakeDeadzoneOut = 93,    # % Full Brake
+    [Alias("clutch-deadzone-in")][int]$ClutchDeadzoneIn = 5, # % Idle (clutch)
+    [Alias("clutch-deadzone-out")][int]$ClutchDeadzoneOut = 93,  # % Full Clutch
     [Alias("gas-window")][int]$GasWindow = 30,               # Time window to check for full throttle (sec)
     [Alias("gas-cooldown")][int]$GasCooldown = 60,           # Time between alerts (sec)
     [Alias("gas-timeout")][int]$GasTimeout = 10,             # Time before assuming "Pause/Menu" (sec)
@@ -125,6 +129,12 @@ Usage: .\FanatecPedals.ps1 [options]
    Clutch Tuning Options (-MonitorClutch only):
        -ClutchRepeat N     Consecutive samples required for clutch noise alert.
 
+   Brake/Clutch Deadzones:
+       -BrakeDeadzoneIn N  % Idle Deadzone for brake (0-100). Default matches -GasDeadzoneIn unless set.
+       -BrakeDeadzoneOut N % Full-travel threshold for brake (0-100). Default matches -GasDeadzoneOut unless set.
+       -ClutchDeadzoneIn N % Idle Deadzone for clutch (0-100). Default matches -GasDeadzoneIn unless set.
+       -ClutchDeadzoneOut N % Full-travel threshold for clutch (0-100). Default matches -GasDeadzoneOut unless set.
+
    Performance & Priority:
        -Idle              Set process priority to IDLE.
        -BelowNormal       Set process priority to BELOW_NORMAL.
@@ -134,6 +144,12 @@ Usage: .\FanatecPedals.ps1 [options]
 "@
     exit
 }
+
+# Align brake/clutch defaults to gas deadzones unless explicitly provided (preserves legacy behavior)
+if (-not $PSBoundParameters.ContainsKey('BrakeDeadzoneIn')) { $BrakeDeadzoneIn = $GasDeadzoneIn }
+if (-not $PSBoundParameters.ContainsKey('BrakeDeadzoneOut')) { $BrakeDeadzoneOut = $GasDeadzoneOut }
+if (-not $PSBoundParameters.ContainsKey('ClutchDeadzoneIn')) { $ClutchDeadzoneIn = $GasDeadzoneIn }
+if (-not $PSBoundParameters.ContainsKey('ClutchDeadzoneOut')) { $ClutchDeadzoneOut = $GasDeadzoneOut }
 
 # -----------------------------------------------------------------------------
 # SECTION 2: TEXT STRINGS
@@ -206,6 +222,10 @@ namespace Fanatec {
         public int monitor_gas;
         public int gas_deadzone_in;
         public int gas_deadzone_out;
+        public int brake_deadzone_in;
+        public int brake_deadzone_out;
+        public int clutch_deadzone_in;
+        public int clutch_deadzone_out;
         public int gas_window;
         public int gas_cooldown;
         public int gas_timeout;
@@ -248,6 +268,10 @@ namespace Fanatec {
         public uint lastGasAlertTime;
         public uint gasIdleMax;
         public uint gasFullMin;
+        public uint brakeIdleMax;
+        public uint brakeFullMin;
+        public uint clutchIdleMax;
+        public uint clutchFullMin;
         public uint gas_timeout_ms;
         public uint gas_window_ms;
         public uint gas_cooldown_ms;
@@ -315,38 +339,41 @@ namespace Fanatec {
             }
 
             // 2. Logical Percentages (Calculated vs Deadzones)
-            // Optimization: Calculate the denominator once per frame. 
+            // Optimization: Calculate the denominator once per frame.
             // If config is broken (Min >= Max), range is 0 to prevent divide-by-zero errors.
-            uint range = (gasFullMin > gasIdleMax) ? (gasFullMin - gasIdleMax) : 0;
+            // Each pedal uses its own idle/full pair so they can be tuned independently.
+            uint gasRange = (gasFullMin > gasIdleMax) ? (gasFullMin - gasIdleMax) : 0;
+            uint clutchRange = (clutchFullMin > clutchIdleMax) ? (clutchFullMin - clutchIdleMax) : 0;
+            uint brakeRange = (brakeFullMin > brakeIdleMax) ? (brakeFullMin - brakeIdleMax) : 0;
 
             // --- GAS ---
-            if (range == 0 || gasValue <= gasIdleMax) {
+            if (gasRange == 0 || gasValue <= gasIdleMax) {
                 gas_logical_pct = 0;
             } else if (gasValue >= gasFullMin) {
                 gas_logical_pct = 100;
             } else {
                 // Inline math: (100 * (Value - Idle)) / Range
-                gas_logical_pct = (uint)(100 * (gasValue - gasIdleMax) / range);
+                gas_logical_pct = (uint)(100 * (gasValue - gasIdleMax) / gasRange);
             }
 
             // --- CLUTCH ---
-            if (range == 0 || clutchValue <= gasIdleMax) {
+            if (clutchRange == 0 || clutchValue <= clutchIdleMax) {
                 clutch_logical_pct = 0;
-            } else if (clutchValue >= gasFullMin) {
+            } else if (clutchValue >= clutchFullMin) {
                 clutch_logical_pct = 100;
             } else {
-                clutch_logical_pct = (uint)(100 * (clutchValue - gasIdleMax) / range);
+                clutch_logical_pct = (uint)(100 * (clutchValue - clutchIdleMax) / clutchRange);
             }
 
             // --- BRAKE ---
-            if (range == 0 || brakeValue <= gasIdleMax) {
+            if (brakeRange == 0 || brakeValue <= brakeIdleMax) {
                 brake_logical_pct = 0;
-            } else if (brakeValue >= gasFullMin) {
+            } else if (brakeValue >= brakeFullMin) {
                 brake_logical_pct = 100;
             } else {
-                brake_logical_pct = (uint)(100 * (brakeValue - gasIdleMax) / range);
+                brake_logical_pct = (uint)(100 * (brakeValue - brakeIdleMax) / brakeRange);
             }
-        }		
+        }
     }
 
     public static class Shared {
@@ -768,6 +795,10 @@ try {
     $State.monitor_gas = [int][bool]$MonitorGas.IsPresent
     $State.gas_deadzone_in = $GasDeadzoneIn
     $State.gas_deadzone_out = $GasDeadzoneOut
+    $State.brake_deadzone_in = $BrakeDeadzoneIn
+    $State.brake_deadzone_out = $BrakeDeadzoneOut
+    $State.clutch_deadzone_in = $ClutchDeadzoneIn
+    $State.clutch_deadzone_out = $ClutchDeadzoneOut
     $State.gas_window = $GasWindow
     $State.gas_cooldown = $GasCooldown
     $State.gas_timeout = $GasTimeout
@@ -805,6 +836,10 @@ try {
     # Runtime Logic Variables
     $GasIdleMax = [uint32]($AxisMax * $GasDeadzoneIn / 100)
     $GasFullMin = [uint32]($AxisMax * $GasDeadzoneOut / 100)
+    $BrakeIdleMax = [uint32]($AxisMax * $BrakeDeadzoneIn / 100)
+    $BrakeFullMin = [uint32]($AxisMax * $BrakeDeadzoneOut / 100)
+    $ClutchIdleMax = [uint32]($AxisMax * $ClutchDeadzoneIn / 100)
+    $ClutchFullMin = [uint32]($AxisMax * $ClutchDeadzoneOut / 100)
     $AxisMargin = [uint32]($AxisMax * $Margin / 100)
 
     # Precompute ms versions once (main.c does this to keep hot path clean)
@@ -815,6 +850,10 @@ try {
     $State.axisMargin     = $AxisMargin
     $State.gasIdleMax      = $GasIdleMax
     $State.gasFullMin      = $GasFullMin
+    $State.brakeIdleMax    = $BrakeIdleMax
+    $State.brakeFullMin    = $BrakeFullMin
+    $State.clutchIdleMax   = $ClutchIdleMax
+    $State.clutchFullMin   = $ClutchFullMin
     $State.gas_timeout_ms  = $GasTimeoutMs
     $State.gas_window_ms   = $GasWindowMs
     $State.gas_cooldown_ms = $GasCooldownMs
@@ -969,11 +1008,19 @@ try {
 
                     $GasIdleMax = [uint32]($AxisMax * $State.gas_deadzone_in  / 100)
                     $GasFullMin = [uint32]($AxisMax * $State.gas_deadzone_out / 100)
+                    $BrakeIdleMax = [uint32]($AxisMax * $State.brake_deadzone_in  / 100)
+                    $BrakeFullMin = [uint32]($AxisMax * $State.brake_deadzone_out / 100)
+                    $ClutchIdleMax = [uint32]($AxisMax * $State.clutch_deadzone_in  / 100)
+                    $ClutchFullMin = [uint32]($AxisMax * $State.clutch_deadzone_out / 100)
                     $AxisMargin = [uint32]($AxisMax * $State.margin / 100)
 
-                    $State.gasIdleMax  = $GasIdleMax
-                    $State.gasFullMin  = $GasFullMin
-                    $State.axisMargin  = $AxisMargin
+                    $State.gasIdleMax   = $GasIdleMax
+                    $State.gasFullMin   = $GasFullMin
+                    $State.brakeIdleMax = $BrakeIdleMax
+                    $State.brakeFullMin = $BrakeFullMin
+                    $State.clutchIdleMax = $ClutchIdleMax
+                    $State.clutchFullMin = $ClutchFullMin
+                    $State.axisMargin   = $AxisMargin
 
                     # Reset runtime/estimator state (main.c does this to avoid instant alerts)
                     $LastFullThrottleTime      = [uint32][Environment]::TickCount

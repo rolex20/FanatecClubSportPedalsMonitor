@@ -646,7 +646,7 @@
       { title: "Pedal Metrics", keys: ['gas_physical_pct', 'gas_logical_pct', 'brake_physical_pct', 'brake_logical_pct', 'clutch_physical_pct', 'clutch_logical_pct'] },
       { title: "Raw Inputs", keys: ['rawGas', 'gasValue', 'rawBrake', 'brakeValue', 'rawClutch', 'clutchValue', 'axisMax', 'axis_normalization_enabled', 'joy_ID', 'joy_Flags'] },
       { title: "Logic State", keys: ['isRacing', 'peakGasInWindow', 'best_estimate_percent', 'lastFullThrottleTime', 'lastGasActivityTime', 'repeatingClutchCount'] },
-      { title: "Gas Tuning", keys: ['gas_deadzone_in', 'gas_deadzone_out', 'gas_min_usage_percent', 'gas_window', 'gas_timeout', 'auto_gas_deadzone_enabled'] },
+      { title: "Pedal Tuning", keys: ['gas_deadzone_in', 'gas_deadzone_out', 'brake_deadzone_in', 'brake_deadzone_out', 'clutch_deadzone_in', 'clutch_deadzone_out', 'gas_min_usage_percent', 'gas_window', 'gas_timeout', 'auto_gas_deadzone_enabled'] },
       { title: "Latency (ms)", keys: ['lagTotal', 'fullLoopTime_ms', 'metricLoopProcessMs', 'metricHttpProcessMs', 'metricTtsSpeakMs', 'lagDash', 'activeUpdateInterval'] },
       { title: "Event Flags", keys: ['gas_alert_triggered', 'clutch_alert_triggered', 'gas_auto_adjust_applied', 'gas_estimate_decreased', 'controller_disconnected', 'controller_reconnected'] },
       { title: "Diagnostics", keys: ['pedDashGetCount', 'algoMode', 'framesReceivedLastFetch', 'telemetry_sequence', 'batchId', 'receivedAtUnixMs', 'currentTime', 'pendingFrameCount'] }
@@ -680,6 +680,10 @@
 
       gas_deadzone_in: { label: "DZ In %", short: "gas_deadzone_in: Percent", long: "Percentage of travel treated as idle. (Source: PedMon)" },
       gas_deadzone_out: { label: "DZ Out %", short: "gas_deadzone_out: Percent", long: "Percentage of travel treated as 100%. (Source: PedMon)" },
+      brake_deadzone_in: { label: "Brake DZ In %", short: "brake_deadzone_in: Percent", long: "Brake pedal idle deadzone percentage. (Source: PedMon)" },
+      brake_deadzone_out: { label: "Brake DZ Out %", short: "brake_deadzone_out: Percent", long: "Brake pedal full-travel threshold percentage. (Source: PedMon)" },
+      clutch_deadzone_in: { label: "Clutch DZ In %", short: "clutch_deadzone_in: Percent", long: "Clutch pedal idle deadzone percentage. (Source: PedMon)" },
+      clutch_deadzone_out: { label: "Clutch DZ Out %", short: "clutch_deadzone_out: Percent", long: "Clutch pedal full-travel threshold percentage. (Source: PedMon)" },
       gas_min_usage_percent: { label: "Min Usage %", short: "gas_min_usage_percent: Percent", long: "Min travel needed to validate drift checks. (Source: PedMon)" },
       gas_window: { label: "Gas Window", short: "gas_window: Seconds", long: "Duration checked for full throttle events. (Source: PedMon)" },
       gas_timeout: { label: "Gas Timeout", short: "gas_timeout: Seconds", long: "Seconds of idle before assuming paused. (Source: PedMon)" },
