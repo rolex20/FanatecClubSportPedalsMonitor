@@ -1,0 +1,15 @@
+{
+  "name": "nodejs-fanatec-pedals",
+  "version": "1.0.0",
+  "description": "Node.js telemetry server for Fanatec ClubSport pedals using WinMM and WebSockets.",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "koffi": "^2.7.0",
+    "ws": "^8.17.0",
+    "yargs": "^17.7.2"
+  }
+}
