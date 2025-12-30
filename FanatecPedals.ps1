@@ -346,6 +346,7 @@ $Source = @"
 using System;
 using System.Runtime.InteropServices;
 using System.Collections.Concurrent;
+using System.Threading;
 
 namespace Fanatec {
 
@@ -512,10 +513,55 @@ namespace Fanatec {
     }
 
     public static class Shared {
-        public static ConcurrentQueue<PedalMonState> TelemetryQueue = new ConcurrentQueue<PedalMonState>();
+        // Clean shutdown signal used by the background HTTP/SSE server
+        public static volatile bool StopSignal = false;
+
+        // Performance metrics written by the background server (read by producer loop)
         public static double LastHttpTimeMs = 0;
-        public static double LastTtsTimeMs = 0;
-        public static volatile bool StopSignal = false; // New: Clean Shutdown Signal
+        public static double LastTtsTimeMs  = 0;
+
+        // -------------------------------------------------------------------------
+        // Telemetry buffer:
+        // 1) Bounded backlog (capacity = 1024)
+        // 2) Latest-wins policy by dropping oldest when full
+        // 3) Producer guarantee: never blocks (TryAdd + drop-oldest)
+        // -------------------------------------------------------------------------
+        public const int TelemetryBufferCapacity = 1024;
+
+        // Underlying ConcurrentQueue keeps TryAdd/TryTake efficient.
+        public static readonly BlockingCollection<PedalMonState> TelemetryQueue =
+            new BlockingCollection<PedalMonState>(
+                new ConcurrentQueue<PedalMonState>(),
+                TelemetryBufferCapacity
+            );
+
+        public static long DroppedTelemetryFrames = 0;
+
+        /// <summary>
+        /// Non-blocking enqueue with latest-wins behavior:
+        /// - TryAdd fast-path
+        /// - If full: drop-oldest (TryTake) until TryAdd succeeds
+        /// - Never blocks the producer loop
+        /// </summary>
+        public static void EnqueueTelemetryNonBlocking(PedalMonState frame) {
+            if (TelemetryQueue.IsAddingCompleted) return;
+
+            // Fast path: room available.
+            if (TelemetryQueue.TryAdd(frame)) return;
+
+            // Full: drop oldest until we can add (still non-blocking).
+            PedalMonState dropped;
+            while (!TelemetryQueue.TryAdd(frame)) {
+                if (TelemetryQueue.TryTake(out dropped)) {
+                    Interlocked.Increment(ref DroppedTelemetryFrames);
+                    if (TelemetryQueue.IsAddingCompleted) return;
+                    continue;
+                }
+
+                // Nothing to drop (should be rare). Bail to avoid spinning.
+                return;
+            }
+        }
     }
 
     public static class Hardware {
@@ -739,7 +785,8 @@ function Publish-TelemetryFrame {
         $State.metricLoopProcessMs    = $Stopwatch.Elapsed.TotalMilliseconds - $LoopStartMs
         $State.producer_notify_ms     = [uint32][Environment]::TickCount
 
-        [Fanatec.Shared]::TelemetryQueue.Enqueue($State.Clone())
+        # Non-blocking enqueue + bounded backlog + latest-wins (drop-oldest when full)
+        [Fanatec.Shared]::EnqueueTelemetryNonBlocking($State.Clone())
     }
 }
 
@@ -757,116 +804,278 @@ function Find-FanatecDevice {
 }
 
 function Create-HttpServerInstance {
-    param($Queue) 
-    
-    # Create the Runspace explicitly to inject variables via Proxy
+    param(
+        # Now a BlockingCollection[Fanatec.PedalMonState]
+        $Queue
+    )
+
     $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
     $rs.ApartmentState = "MTA"
+    $rs.ThreadOptions  = "ReuseThread"
     $rs.Open()
-    
-    # INJECTION: Pass the Live Queue Reference directly to the background scope
-    $rs.SessionStateProxy.SetVariable('Q', $Queue)
-    
-    # DEBUG: Pass a log path so the background thread can scream if it hurts
-    $logPath = "$PWD\http_debug.log"
-    $rs.SessionStateProxy.SetVariable('LogPath', $logPath)
-    
+
+    # Inject queue into the server runspace as $Q
+    $rs.SessionStateProxy.SetVariable("Q", $Queue)
+
     $ps = [PowerShell]::Create()
     $ps.Runspace = $rs
-    
+
     $ps.AddScript({
-        $listener = New-Object System.Net.HttpListener
-        $listener.Prefixes.Add("http://127.0.0.1:8181/")
-        $listener.Start()
-        $sw = [System.Diagnostics.Stopwatch]::New()
-        $localBatchId = 0
-        
-        try {
-            # Loop check: Listening AND StopSignal is FALSE
-            while ($listener.IsListening -and -not [Fanatec.Shared]::StopSignal) {
+        # ---- Configuration ----
+        $port = 8181
+
+        # Accept both hostnames to avoid host/prefix mismatches.
+        $prefixes = @(
+            "http://127.0.0.1:$port/",
+            "http://localhost:$port/"
+        )
+
+        # Single-dashboard gate:
+        # Only ONE /events stream is allowed at a time.
+        $streamGate = New-Object System.Threading.SemaphoreSlim(1, 1)
+
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+        function Write-JsonResponse {
+            param(
+                [System.Net.HttpListenerResponse]$Resp,
+                [int]$StatusCode,
+                [object]$Obj
+            )
+            try {
+                $Resp.StatusCode = $StatusCode
+                $Resp.AddHeader("Access-Control-Allow-Origin", "*")
+                $Resp.AddHeader("Cache-Control", "no-store")
+                $Resp.ContentType = "application/json; charset=utf-8"
+
+                $json  = $Obj | ConvertTo-Json -Compress -Depth 6
+                $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+                $Resp.ContentLength64 = $bytes.Length
+                $Resp.OutputStream.Write($bytes, 0, $bytes.Length)
+            } finally {
+                $Resp.Close()
+            }
+        }
+
+        function Send-SseBusyAndClose {
+            param([System.Net.HttpListenerContext]$Ctx)
+
+            $resp = $Ctx.Response
+            try {
+                $resp.StatusCode = 200
+                $resp.AddHeader("Access-Control-Allow-Origin", "*")
+                $resp.AddHeader("Cache-Control", "no-cache")
+                $resp.ContentType = "text/event-stream"
+                $resp.SendChunked = $true
+                $resp.KeepAlive   = $false
+
+                $writer = New-Object System.IO.StreamWriter($resp.OutputStream, $utf8NoBom)
+                $writer.AutoFlush = $true
+
+                $msg = @{
+                    error  = "SSE busy"
+                    detail = "Only one dashboard connection is allowed. Close the other dashboard tab/window and refresh."
+                } | ConvertTo-Json -Compress
+
+                # Custom SSE event the dashboard listens for:
+                $writer.Write("event: busy`n")
+                $writer.Write("data: $msg`n`n")
+            } catch {
+                # ignore
+            } finally {
+                try { if ($writer) { $writer.Dispose() } } catch {}
+                $resp.Close()
+            }
+        }
+
+        function Start-SseStreamThread {
+            param([System.Net.HttpListenerContext]$Ctx)
+
+            # Thread state bundle
+            $state = @{
+                Ctx        = $Ctx
+                Q          = $Q
+                Gate       = $streamGate
+                Encoding   = $utf8NoBom
+            }
+
+            $thread = New-Object System.Threading.Thread([System.Threading.ParameterizedThreadStart]{
+                param($st)
+
+                $ctx  = $st.Ctx
+                $q    = $st.Q
+                $gate = $st.Gate
+                $enc  = $st.Encoding
+
+                $resp = $ctx.Response
+                $writer = $null
+
+                # Per-connection batch counter (fine since we only allow 1 dashboard)
+                $batchId = 0
+
                 try {
-                    $context = $listener.GetContext()
-                    $sw.Restart()
-                    $request  = $context.Request
-                    $response = $context.Response				
-					
-					# Early QUIT check and short-circuit
-					if ($request.HttpMethod -eq "GET" -and $request.RawUrl.Contains("QUIT")) {
-						# log and set StopSignal
-						# Add-Content -Path $LogPath -Value "QUIT detected at $(Get-Date)"					
-						[Fanatec.Shared]::StopSignal = $true
-						$response.StatusCode = 200
-						$response.StatusDescription = "OK"
-						$jsonBytes = [System.Text.Encoding]::UTF8.GetBytes('{"status":"quit received"}')
-						$response.ContentType = "application/json; charset=utf-8"
-						$response.ContentLength64 = $jsonBytes.Length
-						$response.OutputStream.Write($jsonBytes, 0, $jsonBytes.Length)
-						$response.Close()
-						$listener.Stop()
-						$listener.Dispose()
-						break  # exit the loop
-					}
+                    $resp.StatusCode = 200
+                    $resp.AddHeader("Access-Control-Allow-Origin", "*")
+                    $resp.AddHeader("Cache-Control", "no-cache")
+                    $resp.ContentType = "text/event-stream"
+                    $resp.SendChunked = $true
+                    $resp.KeepAlive   = $true
 
+                    $writer = New-Object System.IO.StreamWriter($resp.OutputStream, $enc)
+                    $writer.AutoFlush = $true
 
-                    $response.AddHeader("Access-Control-Allow-Origin", "*")
-                    $response.AddHeader("Access-Control-Allow-Methods", "GET, OPTIONS")
-                    $response.AddHeader("Access-Control-Allow-Headers", "*")
-                    $response.AddHeader("Cache-Control", "no-store")
+                    # Optional: immediately catch up to the newest frame currently in the buffer
+                    $dump = $null
+                    $latest = $null
+                    $drained = 0
+                    while ($q.TryTake([ref]$dump)) {
+                        $latest = $dump
+                        $drained++
+                    }
 
-                    if ($request.HttpMethod -eq "OPTIONS") {
-                        $response.StatusCode = 200
-                        $response.Close()
+                    if ($null -ne $latest) {
+                        $batchId++
+                        $payload = @{
+                            schemaVersion = 1
+                            bridgeInfo    = @{
+                                batchId         = $batchId
+                                servedAtUnixMs  = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+                                pendingFrameCount = $drained
+                            }
+                            frames        = @($latest)
+                        }
+
+                        $json = $payload | ConvertTo-Json -Compress -Depth 6
+                        $writer.Write("data: $json`n`n")
+                    }
+
+                    # Heartbeat ping (keeps intermediaries from timing out idle streams)
+                    $pingEveryMs = 15000
+                    $pingSw = [System.Diagnostics.Stopwatch]::StartNew()
+
+                    while (-not [Fanatec.Shared]::StopSignal) {
+                        $frame = $null
+
+                        # Blocks ONLY this consumer thread (never the producer)
+                        $gotOne = $q.TryTake([ref]$frame, 250)
+
+                        if ($gotOne) {
+                            $count = 1
+                            $latest = $frame
+
+                            # Drain any backlog quickly; keep only the newest (latest-wins)
+                            while ($q.TryTake([ref]$frame)) {
+                                $latest = $frame
+                                $count++
+                            }
+
+                            $batchId++
+
+                            $payload = @{
+                                schemaVersion = 1
+                                bridgeInfo    = @{
+                                    batchId           = $batchId
+                                    servedAtUnixMs    = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+                                    pendingFrameCount = $count
+                                }
+                                frames        = @($latest)
+                            }
+
+                            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+                            $json = $payload | ConvertTo-Json -Compress -Depth 6
+                            $writer.Write("data: $json`n`n")
+                            $sw.Stop()
+
+                            # Expose for producer-side metrics (next frame will pick it up)
+                            [Fanatec.Shared]::LastHttpTimeMs = $sw.Elapsed.TotalMilliseconds
+
+                            $pingSw.Restart()
+                        }
+                        else {
+                            if ($pingSw.ElapsedMilliseconds -ge $pingEveryMs) {
+                                # SSE comment line ping (ignored by client, but keeps the pipe alive)
+                                $writer.Write(": ping`n`n")
+                                $pingSw.Restart()
+                            }
+                        }
+                    }
+                }
+                catch {
+                    # Most common cause: client disconnected (broken pipe) — just exit.
+                }
+                finally {
+                    try { if ($writer) { $writer.Dispose() } } catch {}
+                    try { $resp.Close() } catch {}
+                    try { $gate.Release() | Out-Null } catch {}
+                }
+            })
+
+            $thread.IsBackground = $true
+            $thread.Start($state)
+        }
+
+        $listener = New-Object System.Net.HttpListener
+        foreach ($p in $prefixes) { $listener.Prefixes.Add($p) }
+
+        try {
+            $listener.Start()
+
+            while ($listener.IsListening -and -not [Fanatec.Shared]::StopSignal) {
+                $ctx = $null
+                try {
+                    $ctx = $listener.GetContext()
+                } catch {
+                    break
+                }
+
+                $req  = $ctx.Request
+                $resp = $ctx.Response
+                $path = $req.Url.AbsolutePath
+
+                # Basic CORS/preflight support
+                if ($req.HttpMethod -eq "OPTIONS") {
+                    $resp.StatusCode = 204
+                    $resp.AddHeader("Access-Control-Allow-Origin", "*")
+                    $resp.AddHeader("Access-Control-Allow-Methods", "GET, OPTIONS")
+                    $resp.AddHeader("Access-Control-Allow-Headers", "*")
+                    $resp.Close()
+                    continue
+                }
+
+                if ($path -eq "/QUIT") {
+                    [Fanatec.Shared]::StopSignal = $true
+                    Write-JsonResponse -Resp $resp -StatusCode 200 -Obj @{ ok = $true; msg = "Shutting down." }
+                    break
+                }
+
+                if ($path -eq "/events") {
+                    # Enforce single dashboard
+                    if (-not $streamGate.Wait(0)) {
+                        Send-SseBusyAndClose -Ctx $ctx
                         continue
                     }
-                    
-                    # Generic List for JSON serialization
-                    $frames = [System.Collections.Generic.List[Object]]::new()
-                    $f = $null
-                    
-                    # DIRECT REFERENCE ACCESS: $Q is injected via SessionStateProxy
-                    while ($Q.TryDequeue([ref]$f)) { $frames.Add($f) }
-                    
-                    $localBatchId++
-                    
-                    $payload = @{
-                        schemaVersion = 1
-                        bridgeInfo = @{
-                            batchId = $localBatchId
-                            servedAtUnixMs = [DateTimeOffset]::Now.ToUnixTimeMilliseconds()
-                            pendingFrameCount = $frames.Count
-                        }
-                        frames = $frames
-                    }
-                    
-                    $jsonBytes = [System.Text.Encoding]::UTF8.GetBytes(($payload | ConvertTo-Json -Compress -Depth 5))
-                    $response.ContentType = "application/json; charset=utf-8"
-                    $response.ContentLength64 = $jsonBytes.Length
-                    $response.OutputStream.Write($jsonBytes, 0, $jsonBytes.Length)
-                    $response.Close()
-                    
-                    $sw.Stop()
-                    # Best effort metric write-back
-                    # try { [Fanatec.Shared]::LastHttpTimeMs = $sw.Elapsed.TotalMilliseconds } catch {}
-					[Fanatec.Shared]::LastHttpTimeMs = $sw.Elapsed.TotalMilliseconds
-                    
-                } catch {
-                     # Log inner loop errors
-                     Add-Content -Path $LogPath -Value ("[{0}] Frame Error: {1}" -f [DateTime]::Now, $_)
+
+                    # Stream thread owns the response lifetime
+                    Start-SseStreamThread -Ctx $ctx
+                    continue
+                }
+
+                # Hard-disable old polling endpoint so you never accidentally use it again
+                Write-JsonResponse -Resp $resp -StatusCode 410 -Obj @{
+                    error = "Polling disabled"
+                    use   = "/events (Server-Sent Events)"
                 }
             }
-        } 
-        catch {
-             # Log  crash
-             Add-Content -Path $LogPath -Value ("[{0}] FATAL: {1}" -f [DateTime]::Now, $_)
         }
-        finally { 
-            if ($listener) { $listener.Stop() } 
+        finally {
+            try { if ($listener.IsListening) { $listener.Stop() } } catch {}
+            try { $listener.Close() } catch {}
+            try { $streamGate.Dispose() } catch {}
         }
     }) | Out-Null
-    
-    return $ps # Return control instance
-}
 
+    return $ps
+}
 # PRIORITY AND AFFINITY
 Set-ThisProcessPriorityAndAffinity -Idle:$Idle -BelowNormal:$BelowNormal -AffinityMask $AffinityMask
 
