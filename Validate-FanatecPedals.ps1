@@ -63,18 +63,26 @@ function Get-ExpectedFrameKeys {
     }
   }
 
-  # Built-in expected schema:
-  # 70 legacy fields (main.c/pedBridge) + 4 bridge extensions used by PedDash
+  $defaultSchema = Join-Path -Path $PSScriptRoot -ChildPath "schema/Fanatec.PedalMonState.keys.json"
+  if (Test-Path -LiteralPath $defaultSchema) {
+    try {
+      return Get-Content -LiteralPath $defaultSchema -Raw | ConvertFrom-Json
+    } catch {
+      Fail "Could not read default schema '$defaultSchema': $_"
+    }
+  }
+
+  # Fallback: legacy schema (pre 2.6.x)
   return @(
     "verbose_flag","monitor_clutch","monitor_gas","gas_deadzone_in","gas_deadzone_out","gas_window","gas_cooldown","gas_timeout","gas_min_usage_percent",
     "axis_normalization_enabled","debug_raw_mode","clutch_repeat_required","estimate_gas_deadzone_enabled","auto_gas_deadzone_enabled","auto_gas_deadzone_minimum",
     "target_vendor_id","target_product_id","telemetry_enabled","tts_enabled","ipc_enabled","no_console_banner",
-    "gas_physical_pct","clutch_physical_pct","gas_logical_pct","clutch_logical_pct",
+    "gas_physical_pct","clutch_physical_pct","brake_physical_pct","gas_logical_pct","clutch_logical_pct","brake_logical_pct",
     "joy_ID","joy_Flags","iterations","margin","sleep_Time",
     "axisMax","axisMargin","lastClutchValue","repeatingClutchCount","isRacing","peakGasInWindow","lastFullThrottleTime","lastGasActivityTime","lastGasAlertTime",
-    "gasIdleMax","gasFullMin","gas_timeout_ms","gas_window_ms","gas_cooldown_ms",
+    "gasIdleMax","gasFullMin","brakeIdleMax","brakeFullMin","clutchIdleMax","clutchFullMin","gas_timeout_ms","gas_window_ms","gas_cooldown_ms",
     "best_estimate_percent","last_printed_estimate","estimate_window_peak_percent","estimate_window_start_time","last_estimate_print_time",
-    "currentTime","rawGas","rawClutch","gasValue","clutchValue","closure","percentReached","currentPercent","iLoop",
+    "currentTime","rawGas","rawClutch","rawBrake","gasValue","clutchValue","brakeValue","closure","percentReached","currentPercent","iLoop",
     "producer_loop_start_ms","producer_notify_ms","fullLoopTime_ms","telemetry_sequence",
     "receivedAtUnixMs","metricHttpProcessMs","metricTtsSpeakMs","metricLoopProcessMs",
     "gas_alert_triggered","clutch_alert_triggered","controller_disconnected","controller_reconnected","gas_estimate_decreased","gas_auto_adjust_applied",
@@ -180,6 +188,9 @@ while ((Get-Date) -lt $stopAt) {
 
   if ($payload.schemaVersion -ne 1) { Fail "schemaVersion=$($payload.schemaVersion) (expected 1)" }
   if (-not $payload.bridgeInfo) { Fail "Missing bridgeInfo" }
+  if (-not $payload.bridgeInfo.batchId) { Warn "bridgeInfo.batchId missing" }
+  if (-not $payload.bridgeInfo.generatedAtUnixMs) { Warn "bridgeInfo.generatedAtUnixMs missing" }
+  if ($null -eq $payload.bridgeInfo.framesInBatch) { Warn "bridgeInfo.framesInBatch not present" }
   if (-not $payload.frames) { Fail "Missing frames array" }
 
   $frames = @($payload.frames)
@@ -187,6 +198,10 @@ while ((Get-Date) -lt $stopAt) {
     $emptyGets++
     Start-Sleep -Milliseconds $PollMs
     continue
+  }
+
+  if ($payload.bridgeInfo.framesInBatch -ne $frames.Count) {
+    Warn "bridgeInfo.framesInBatch=$($payload.bridgeInfo.framesInBatch) but frames returned $($frames.Count)"
   }
 
   foreach ($f in $frames) {
