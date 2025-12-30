@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    FanatecPedals.ps1 v2.6.2
+    FanatecPedals.ps1 v2.6.4
     The Unified Fanatec Pedals Monitor and Telemetry Bridge.
     
 .DESCRIPTION
@@ -8,7 +8,8 @@
     Provides Async TTS alerts and an HTTP JSON Telemetry server.
     
     Version History:
-    2.6.3 - Added physical percents, removed interlocked batchId, other minor fixes
+    2.6.4 - Added support for config .ini files, brake and clutch deadzones
+	2.6.3 - Added physical percents, removed interlocked batchId, other minor fixes
 
     2.6.2 - Patch for missing telemetry
     2.6.0 - Add brake axis selection + telemetry fields.
