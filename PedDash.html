@@ -350,7 +350,8 @@
       if (historyEl) historyEl.value = config.MAX_HISTORY_LINES ?? '';
     }
 
-    const BRIDGE_URL = "http://localhost:8181/";
+    // SSE endpoint (persistent stream). Old polling endpoint is intentionally disabled.
+    const BRIDGE_URL = "http://127.0.0.1:8181/events";
     const MAX_CHART_HISTORY = 300;
     const AVG_WINDOW_S = 3;
 
@@ -692,10 +693,10 @@
       lagTotal: { label: "Total Latency", short: "lagTotal: Total pipeline ms", long: "Total time across C (PedMon), PS (PedBridge), and JS (PedDash). (Source: PedDash)" },
       fullLoopTime_ms: { label: "C Loop", short: "fullLoopTime_ms: PedMon ms", long: "Processing time of the C monitor loop. (Source: PedMon)" },
       metricLoopProcessMs: { label: "PS Loop", short: "metricLoopProcessMs: PedBridge loop ms", long: "Time PowerShell took to process the shared-memory loop iteration. (Source: PedBridge)" },
-      metricHttpProcessMs: { label: "PS HTTP", short: "metricHttpProcessMs: HTTP serve ms", long: "Time PedBridge spent serving the most recent HTTP request. (Source: PedBridge)" },
+      metricHttpProcessMs: { label: "PS HTTP", short: "metricHttpProcessMs: Serve ms", long: "Time PedBridge spent packaging/writing the most recent telemetry message (ms). (Source: PedBridge)" },
       metricTtsSpeakMs: { label: "PS TTS", short: "metricTtsSpeakMs: TTS call ms", long: "Time spent in the PedBridge TTS speak call path for the most recent utterance (ms). (Source: PedBridge)" },
-      lagDash: { label: "JS Render", short: "lagDash: Browser fetch+update ms", long: "Time taken by the browser to fetch JSON and update UI. (Source: PedDash)" },
-      activeUpdateInterval: { label: "Poll Interval", short: "activeUpdateInterval: Sleep ms", long: "Current delay (ms) between polling iterations. (Source: PedDash)" },
+      lagDash: { label: "JS Render", short: "lagDash: Bridge→UI ms", long: "Time from PedBridge 'servedAtUnixMs' to when this UI handler runs (ms). (Source: PedDash)" },
+      activeUpdateInterval: { label: "Stream Δt", short: "activeUpdateInterval: Observed ms", long: "Observed time between incoming SSE messages (ms). (Source: PedDash)" },
 
       gas_alert_triggered: { label: "Evt: Gas", short: "gas_alert_triggered: Flag", long: "Fired when gas drift is detected. (Source: PedMon)" },
       clutch_alert_triggered: { label: "Evt: Clutch", short: "clutch_alert_triggered: Flag", long: "Fired when rudder noise is detected. (Source: PedMon)" },
@@ -704,7 +705,7 @@
       controller_disconnected: { label: "Evt: Disc", short: "controller_disconnected: Flag", long: "Fired when pedal device is lost. (Source: PedMon)" },
       controller_reconnected: { label: "Evt: Reconn", short: "controller_reconnected: Flag", long: "Fired when device is re-found. (Source: PedMon)" },
 
-      pedDashGetCount: { label: "GET Count", short: "pedDashGetCount: Total GETs", long: "Total HTTP requests issued by the dashboard since page load. (Source: PedDash)" },
+      pedDashGetCount: { label: "Msg Count", short: "pedDashGetCount: SSE messages", long: "Total SSE messages received since page load. (Source: PedDash)" },
       algoMode: { label: "Algo Mode", short: "algoMode: Selected algorithm", long: "The currently selected Smart Algorithm (ALGO_MODE). (Source: PedDash)" },
       framesReceivedLastFetch: { label: "Frames Rx", short: "framesReceivedLastFetch: FRAMES RX", long: "Number of telemetry frames delivered in the last HTTP response batch. (Source: PedDash)" },
       pendingFrameCount: { label: "Pending", short: "pendingFrameCount: Queue depth", long: "Frames waiting in PedBridge queue at the moment the HTTP request was served. (Source: PedBridge)" },
@@ -1167,44 +1168,93 @@ const cachedGrad = (function() {
     }
 
     /**
-     * 7. DATA LOOP
+     * 7. DATA STREAM (SSE)
+     * Replaces polling fetch() with one persistent connection:
+     * - latest-wins semantics are enforced by PedBridge (bounded buffer + drop-oldest)
+     * - we receive 1 "latest" frame per message, plus pendingFrameCount telling us how many were coalesced
+     * - only ONE dashboard is allowed; additional dashboards get an SSE "busy" event
      */
-    async function dataLoop() {
-      const startFetch = performance.now();
+    let evtSource = null;
+    let reconnectTimer = null;
+    let sseBackoffMs = 500;
+    let sseHardDisabled = false; // set true when we receive "busy"
 
-      // Real-world cadence measurement (includes prior processing + timeout scheduling jitter)
-      if (Number.isFinite(state.lastFetchStartPerf)) {
-        state.lastFetchCycleMs = startFetch - state.lastFetchStartPerf;
-      } else {
-        state.lastFetchCycleMs = NaN;
-      }
-      state.lastFetchStartPerf = startFetch;
+    function startTelemetryStream() {
+      if (sseHardDisabled) return;
 
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 2000);
+      // Ensure we never have two EventSource objects
+      try { if (evtSource) evtSource.close(); } catch {}
+      evtSource = null;
 
-      try {
-        const res = await fetch(BRIDGE_URL, { signal: controller.signal });
-        clearTimeout(timeoutId);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      reconnectTimer = null;
 
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      logEvent("System", `Connecting SSE: ${BRIDGE_URL}`);
 
-        const json = await res.json();
+      evtSource = new EventSource(BRIDGE_URL);
+
+      evtSource.onopen = () => {
+        state.isConnected = true;
+        state.netFailStreak = 0;
+        sseBackoffMs = 500;
+
+        if (!state.hasData) {
+          logEvent("System", "Bridge Connected (SSE).");
+          state.hasData = true;
+        }
+      };
+
+      // If a second dashboard tries to connect, PedBridge sends event: busy then closes.
+      evtSource.addEventListener("busy", (e) => {
+        sseHardDisabled = true;
+        state.isConnected = false;
+
+        let msg = "SSE busy: another dashboard is already connected. Close it and refresh this page.";
+        try {
+          const obj = JSON.parse(e.data);
+          if (obj?.detail) msg = obj.detail;
+        } catch {}
+        logEvent("Error", msg);
+
+        try { evtSource.close(); } catch {}
+        evtSource = null;
+      });
+
+      evtSource.onmessage = (e) => {
+        const nowPerf = performance.now();
+
+        // Observed cadence (time between SSE messages)
+        if (Number.isFinite(state.lastFetchStartPerf)) {
+          state.lastFetchCycleMs = nowPerf - state.lastFetchStartPerf;
+          state.activeInterval = state.lastFetchCycleMs; // re-use the field to mean "observed Δt"
+        } else {
+          state.lastFetchCycleMs = NaN;
+          state.activeInterval = NaN;
+        }
+        state.lastFetchStartPerf = nowPerf;
+
+        let json;
+        try {
+          json = JSON.parse(e.data);
+        } catch (err) {
+          logEvent("Warn", "Bad SSE JSON frame");
+          return;
+        }
+
         state.getCounter++;
 
         const frames = json?.frames || [];
         const bi = json?.bridgeInfo || {};
 
-        // Store batch-level metadata for algo-debug export (helps analyze queue dynamics/jitter)
+        // Store batch-level metadata for algo-debug export (still useful in SSE mode)
         if (frames.length > 0) {
-          const oldest = frames[0];
           const newest = frames[frames.length - 1];
           state.lastBatchMeta = {
             batchId: bi.batchId ?? newest.batchId ?? null,
             servedAtUnixMs: bi.servedAtUnixMs ?? null,
             framesInBatch: frames.length,
             pendingFrameCount: bi.pendingFrameCount ?? frames.length,
-            oldestEnqueueUnixMs: Number.isFinite(oldest?.receivedAtUnixMs) ? oldest.receivedAtUnixMs : null,
+            oldestEnqueueUnixMs: Number.isFinite(newest?.receivedAtUnixMs) ? newest.receivedAtUnixMs : null,
             newestEnqueueUnixMs: Number.isFinite(newest?.receivedAtUnixMs) ? newest.receivedAtUnixMs : null
           };
         } else {
@@ -1216,75 +1266,55 @@ const cachedGrad = (function() {
             oldestEnqueueUnixMs: null,
             newestEnqueueUnixMs: null
           };
-        }
-
-        if (frames.length === 0) {
-          if (config.LOG_EMPTY_FRAMES) logEvent("Info", "Bridge: 0 frames received");
-
-          // Maintain a meaningful “0 frames” telemetry indicator
-          state.frame = { ...(state.frame || {}), framesReceivedLastFetch: 0, pendingFrameCount: bi.pendingFrameCount ?? state.frame.pendingFrameCount ?? 0 };
-
-          // Keep "served at" time consistent with UI definition when possible
-          if (Number.isFinite(state.lastBatchMeta?.servedAtUnixMs)) {
-            state.frame.receivedAtUnixMs = state.lastBatchMeta.servedAtUnixMs;
-          }
-
-          updateNonFrameMetrics(startFetch);
-
-          const tp = state.lastProducerPeriod || 100;
-          schedule(0, tp);
           return;
         }
 
         const latest = frames[frames.length - 1];
 
-        latest.framesReceivedLastFetch = frames.length;
-        latest.pendingFrameCount = bi.pendingFrameCount ?? 0;
+        // In SSE mode, we interpret pendingFrameCount as "how many frames were coalesced since last message"
+        const coalesced = bi.pendingFrameCount ?? frames.length;
+        latest.framesReceivedLastFetch = coalesced;   // powers your FRAMES RX + red warning + ffw indicator
+        latest.pendingFrameCount = coalesced;         // keep existing diagnostics card meaningful
         latest.batchId = bi.batchId ?? latest.batchId;
 
-        // Preserve enqueue-time (from per-frame) AND store served-time (from bridgeInfo).
-        // Keep receivedAtUnixMs as "served" for backwards compatibility with existing UI/defs.
+        // Preserve enqueue-time AND store served-time.
+        // Keep receivedAtUnixMs as "served" for backwards compatibility with your UI.
         const enqueueAt = latest.receivedAtUnixMs;
         latest.bridgeEnqueueAtUnixMs = Number.isFinite(enqueueAt) ? enqueueAt : latest.bridgeEnqueueAtUnixMs;
-        latest.bridgeServedAtUnixMs = state.lastBatchMeta?.servedAtUnixMs ?? latest.bridgeServedAtUnixMs;
-        latest.receivedAtUnixMs = latest.bridgeServedAtUnixMs ?? bi.servedAtUnixMs ?? latest.receivedAtUnixMs;
+        latest.bridgeServedAtUnixMs = bi.servedAtUnixMs ?? state.lastBatchMeta?.servedAtUnixMs ?? latest.bridgeServedAtUnixMs;
+        latest.receivedAtUnixMs = latest.bridgeServedAtUnixMs ?? latest.receivedAtUnixMs;
 
         state.isConnected = true;
         state.netFailStreak = 0;
 
-        if (!state.hasData) { logEvent("System", "Bridge Connected."); state.hasData = true; }
+        processFrame(latest, nowPerf);
 
-        processFrame(latest, startFetch);
-
+        // Producer period approximation (kept for algo scoring / charts)
         const tP = (latest.sleep_Time || 100) + (latest.fullLoopTime_ms || 0);
         state.lastProducerPeriod = tP;
 
-        schedule(frames.length, tP);
+        // Still do scoring math each sample; no scheduling (SSE push model)
+        const prevInterval = state.activeInterval;
+        tickAlgoMetrics(coalesced, tP, prevInterval, state.activeInterval, NaN, NaN, false, "");
+      };
 
-      } catch (e) {
-        clearTimeout(timeoutId);
-
-        // AbortError should be treated as a transient timing hiccup, not a hard disconnect
-        if (e && (e.name === "AbortError" || String(e.message).toLowerCase().includes("aborted"))) {
-          state.netFailStreak++;
-          logEvent("Warn", "Fetch timeout/abort (2s) - retrying");
-          if (!state.hasData && state.netFailStreak >= 3) state.isConnected = false;
-          setTimeout(dataLoop, 250);
-          return;
-        }
-
+      evtSource.onerror = () => {
         state.netFailStreak++;
-        logEvent("Error", e?.message || String(e));
+        if (!state.hasData && state.netFailStreak >= 2) state.isConnected = false;
 
-        // Only flip disconnected after repeated failures (prevents 1-off blips killing the UI)
-        if (state.netFailStreak >= 2) {
-          state.isConnected = false;
-          state.target = { gasP:0, gasL:0, brP:0, brL:0, brRaw:0, brNorm:0, clP:0, clL:0, lagT:0, lagP:0, lagB:0, lagD:0 };
-          state.frame = {};
-        }
+        // If we got "busy", we intentionally stop reconnecting
+        if (sseHardDisabled) return;
 
-        setTimeout(dataLoop, 1000);
-      }
+        try { evtSource.close(); } catch {}
+        evtSource = null;
+
+        // Exponential-ish backoff, capped
+        const wait = Math.min(5000, sseBackoffMs);
+        sseBackoffMs = Math.min(5000, sseBackoffMs * 2);
+
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        reconnectTimer = setTimeout(startTelemetryStream, wait);
+      };
     }
 
     function schedule(rec, tP) {
@@ -1328,7 +1358,8 @@ const cachedGrad = (function() {
         clearAlgoDerivedTelemetry();
       }
 
-      setTimeout(dataLoop, sleep);
+      // SSE mode doesn't use a polling loop; placeholder keeps legacy math paths intact.
+      setTimeout(() => {}, sleep);
     }
 
     function logFlagEvents(f) {
@@ -1352,7 +1383,18 @@ const cachedGrad = (function() {
         f.telemetry_sequence_gap = 0;
       }
 
-      const dLag = performance.now() - start;
+      // OPTION B:
+      // Prefer bridge wall-clock timestamp so lagDash represents "bridge served → this JS handler ran".
+      // Falls back to the old measurement if servedAt isn't available.
+      const servedAtUnixMs =
+        (Number.isFinite(f.bridgeServedAtUnixMs) ? f.bridgeServedAtUnixMs :
+         Number.isFinite(f.receivedAtUnixMs) ? f.receivedAtUnixMs :
+         NaN);
+
+      const dLag = Number.isFinite(servedAtUnixMs)
+        ? (Date.now() - servedAtUnixMs)
+        : (performance.now() - start);
+
       f.lagDash = dLag;
       f.activeUpdateInterval = state.activeInterval;
       f.pedDashGetCount = state.getCounter;
@@ -1763,7 +1805,7 @@ function renderLoop(timestamp) {
       initTelemetryUI();
       logEvent("System", "Initializing Dashboard...");
       renderLoop();
-      dataLoop();
+      startTelemetryStream();
     };
 
     // Expose functions for inline HTML onclick handlers (robust across environments)
