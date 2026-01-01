@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    FanatecPedals.ps1 v2.6.4
+    FanatecPedals.ps1 v2.6.5
     The Unified Fanatec Pedals Monitor and Telemetry Bridge.
     
 .DESCRIPTION
@@ -8,6 +8,7 @@
     Provides Async TTS alerts and an HTTP JSON Telemetry server.
     
     Version History:
+	2.6.5 - Moved to SSE HTTP
     2.6.4 - Added support for config .ini files, brake and clutch deadzones
 	2.6.3 - Added physical percents, removed interlocked batchId, other minor fixes
 
@@ -659,6 +660,20 @@ if (-not ([System.Management.Automation.PSTypeName]'Fanatec.Hardware').Type) {
     
     # Set the optimization flag here
     $Params.CompilerOptions = "/optimize"
+
+	# PowerShell 5.1 + Add-Type -CompilerParameters does NOT reliably auto-reference
+	# the same framework assemblies as the simple Add-Type path.
+	# BlockingCollection<T> (and some concurrent primitives) require System.dll / System.Core.dll.
+	$runtimeDir = [Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory()
+	foreach ($dll in @("System.dll", "System.Core.dll")) {
+	    $path = Join-Path $runtimeDir $dll
+	    if (Test-Path $path) {
+	        [void]$Params.ReferencedAssemblies.Add($path)
+	    }
+	}
+	# Optional but recommended for a "release-like" compile (still JITs at runtime):
+	$Params.GenerateInMemory = $true
+	$Params.IncludeDebugInformation = $false	
 
     # Pass the OBJECT to the -CompilerParameters argument
     Add-Type -TypeDefinition $Source -CompilerParameters $Params	
