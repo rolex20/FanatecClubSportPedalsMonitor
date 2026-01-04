@@ -902,139 +902,223 @@ function Create-HttpServerInstance {
                 $resp.Close()
             }
         }
+Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -EntryType Warning -Message "line 905"
+		function Start-SseStreamThread {
+			param([System.Net.HttpListenerContext]$Ctx)
+Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -EntryType Warning -Message "line 908"
+			# -------------------------------------------------------------------------
+			# Refresh-safe cleanup (prevents runspace/PS instance leaks across reconnects)
+			# -------------------------------------------------------------------------
+			if ($global:PedBridge_ActiveSseWorker) {
+				$old = $global:PedBridge_ActiveSseWorker
+				$global:PedBridge_ActiveSseWorker = $null
 
-        function Start-SseStreamThread {
-            param([System.Net.HttpListenerContext]$Ctx)
+				try { if ($old.EventId) { Unregister-Event -SourceIdentifier $old.EventId -ErrorAction SilentlyContinue } } catch {}
+				try { if ($old.EventId) { Remove-Event      -SourceIdentifier $old.EventId -ErrorAction SilentlyContinue } } catch {}
+				try { if ($old.Ps)      { $old.Ps.Stop() } } catch {}
+				try { if ($old.Ps)      { $old.Ps.Dispose() } } catch {}
+				try { if ($old.Rs)      { $old.Rs.Close() } } catch {}
+				try { if ($old.Rs)      { $old.Rs.Dispose() } } catch {}
+			}
 
-            # Thread state bundle
-            $state = @{
-                Ctx        = $Ctx
-                Q          = $Q
-                Gate       = $streamGate
-                Encoding   = $utf8NoBom
-            }
+			# Bundle state for the worker runspace (avoid ScriptBlock TLS context issues)
+			$state = @{
+				Ctx      = $Ctx
+				Q        = $Q
+				Gate     = $streamGate
+				Encoding = $utf8NoBom
+			}
 
-            $thread = New-Object System.Threading.Thread([System.Threading.ParameterizedThreadStart]{
-                param($st)
+			$rs2   = $null
+			$ps2   = $null
+			$id    = $null
+			$srcId = $null
 
-                $ctx  = $st.Ctx
-                $q    = $st.Q
-                $gate = $st.Gate
-                $enc  = $st.Encoding
+			try {
+				$rs2 = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+				$rs2.ApartmentState = "MTA"
+				$rs2.ThreadOptions  = "ReuseThread"
+				$rs2.Open()
 
-                $resp = $ctx.Response
-                $writer = $null
+				$ps2 = [PowerShell]::Create()
+				$ps2.Runspace = $rs2
 
-                # Per-connection batch counter (fine since we only allow 1 dashboard)
-                $batchId = 0
+				$id    = [guid]::NewGuid().ToString("N")
+				$srcId = "PedBridge_SseWorker_$id"
 
-                try {
-                    $resp.StatusCode = 200
-                    $resp.AddHeader("Access-Control-Allow-Origin", "*")
-                    $resp.AddHeader("Cache-Control", "no-cache")
-                    $resp.ContentType = "text/event-stream"
-                    $resp.SendChunked = $true
-                    $resp.KeepAlive   = $true
+				# Keep references alive (and allow forced cleanup on refresh)
+				$global:PedBridge_ActiveSseWorker = @{
+					Id      = $id
+					EventId = $srcId
+					Ps      = $ps2
+					Rs      = $rs2
+				}
 
-                    $writer = New-Object System.IO.StreamWriter($resp.OutputStream, $enc)
-                    $writer.AutoFlush = $true
+				# Auto-dispose once the async pipeline finishes (extra safety)
+				Register-ObjectEvent -InputObject $ps2 -EventName InvocationStateChanged -SourceIdentifier $srcId -MessageData @{
+					Id      = $id
+					EventId = $srcId
+					Ps      = $ps2
+					Rs      = $rs2
+				} -Action {
+					try {
+						$doneStates = @(
+							[System.Management.Automation.PSInvocationState]::Completed,
+							[System.Management.Automation.PSInvocationState]::Failed,
+							[System.Management.Automation.PSInvocationState]::Stopped
+						)
+Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -EntryType Warning -Message "line 970"
+						if ($EventArgs.InvocationStateInfo.State -in $doneStates) {
+							$md = $Event.MessageData
 
-                    # Optional: immediately catch up to the newest frame currently in the buffer
-                    $dump = $null
-                    $latest = $null
-                    $drained = 0
-                    while ($q.TryTake([ref]$dump)) {
-                        $latest = $dump
-                        $drained++
-                    }
+							try { Unregister-Event -SourceIdentifier $md.EventId -ErrorAction SilentlyContinue } catch {}
+							try { Remove-Event      -SourceIdentifier $md.EventId -ErrorAction SilentlyContinue } catch {}
 
-                    if ($null -ne $latest) {
-                        $batchId++
-                        $payload = @{
-                            schemaVersion = 1
-                            bridgeInfo    = @{
-                                batchId         = $batchId
-                                servedAtUnixMs  = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-                                pendingFrameCount = $drained
-                            }
-                            frames        = @($latest)
-                        }
+							# Only clear if we're still the active worker (avoid races)
+							if ($global:PedBridge_ActiveSseWorker -and $global:PedBridge_ActiveSseWorker.Id -eq $md.Id) {
+								$global:PedBridge_ActiveSseWorker = $null
+							}
 
-                        $json = $payload | ConvertTo-Json -Compress -Depth 6
-                        $writer.Write("data: $json`n`n")
-                    }
+							try { if ($md.Ps) { $md.Ps.Dispose() } } catch {}
+							try { if ($md.Rs) { $md.Rs.Close() } } catch {}
+							try { if ($md.Rs) { $md.Rs.Dispose() } } catch {}
+						}
+					} catch {}
+				} | Out-Null
 
-                    # Heartbeat ping (keeps intermediaries from timing out idle streams)
-                    $pingEveryMs = 15000
-                    $pingSw = [System.Diagnostics.Stopwatch]::StartNew()
+				# The actual SSE pump runs in the child runspace
+				$ps2.AddScript({
+					param($st)
 
-                    while (-not [Fanatec.Shared]::StopSignal) {
-                        $frame = $null
+					$ctx  = $st.Ctx
+					$q    = $st.Q
+					$gate = $st.Gate
+					$enc  = $st.Encoding
 
-                        # Blocks ONLY this consumer thread (never the producer)
-                        $gotOne = $q.TryTake([ref]$frame, 250)
+					$resp    = $ctx.Response
+					$writer  = $null
+					$batchId = 0
 
-                        if ($gotOne) {
-                            $count = 1
-                            $latest = $frame
+					try {
+						$resp.StatusCode = 200
+						$resp.AddHeader("Access-Control-Allow-Origin", "*")
+						$resp.AddHeader("Cache-Control", "no-cache")
+						$resp.ContentType = "text/event-stream"
+						$resp.SendChunked = $true
+						$resp.KeepAlive   = $true
+Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -EntryType Warning -Message "line 1009"
+						$writer = New-Object System.IO.StreamWriter($resp.OutputStream, $enc)
+						$writer.AutoFlush = $true
 
-                            # Drain any backlog quickly; keep only the newest (latest-wins)
-                            while ($q.TryTake([ref]$frame)) {
-                                $latest = $frame
-                                $count++
-                            }
+						# Initial drain: send ALL frames currently queued (oldest -> newest)
+						$frames = New-Object "System.Collections.Generic.List[object]"
+						$tmp = $null
+						while ($q.TryTake([ref]$tmp)) {
+							[void]$frames.Add($tmp)
+						}
 
-                            $batchId++
+						if ($frames.Count -gt 0) {
+							$batchId++
+							$payload = @{
+								schemaVersion = 1
+								bridgeInfo    = @{
+									batchId           = $batchId
+									servedAtUnixMs    = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+									pendingFrameCount = $frames.Count
+								}
+								frames = $frames
+							}
 
-                            $payload = @{
-                                schemaVersion = 1
-                                bridgeInfo    = @{
-                                    batchId           = $batchId
-                                    servedAtUnixMs    = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-                                    pendingFrameCount = $count
-                                }
-                                frames        = @($latest)
-                            }
+							$sw = [System.Diagnostics.Stopwatch]::StartNew()
+							$json = $payload | ConvertTo-Json -Compress -Depth 6
+							$writer.Write("data: $json`n`n")
+							$sw.Stop()
+							[Fanatec.Shared]::LastHttpTimeMs = $sw.Elapsed.TotalMilliseconds
+						}
 
-                            $sw = [System.Diagnostics.Stopwatch]::StartNew()
-                            $json = $payload | ConvertTo-Json -Compress -Depth 6
-                            $writer.Write("data: $json`n`n")
-                            $sw.Stop()
+						# Heartbeat ping (keeps intermediaries from timing out idle streams)
+						$pingEveryMs = 15000
+						$pingSw = [System.Diagnostics.Stopwatch]::StartNew()
 
-                            # Expose for producer-side metrics (next frame will pick it up)
-                            [Fanatec.Shared]::LastHttpTimeMs = $sw.Elapsed.TotalMilliseconds
+						while (-not [Fanatec.Shared]::StopSignal) {
+							$first = $null
+							$gotOne = $q.TryTake([ref]$first, 250)
 
-                            $pingSw.Restart()
-                        }
-                        else {
-                            if ($pingSw.ElapsedMilliseconds -ge $pingEveryMs) {
-                                # SSE comment line ping (ignored by client, but keeps the pipe alive)
-                                $writer.Write(": ping`n`n")
-                                $pingSw.Restart()
-                            }
-                        }
-                    }
-                }
-                catch {
-                    # Most common cause: client disconnected (broken pipe) — just exit.
-                }
-                finally {
-                    try { if ($writer) { $writer.Dispose() } } catch {}
-                    try { $resp.Close() } catch {}
-                    try { $gate.Release() | Out-Null } catch {}
-                }
-            })
+							if ($gotOne) {
+								# Drain everything available right now and send it all
+								$frames = New-Object "System.Collections.Generic.List[object]"
+								[void]$frames.Add($first)
 
-            $thread.IsBackground = $true
-            $thread.Start($state)
-        }
+								$next = $null
+								while ($q.TryTake([ref]$next)) {
+									[void]$frames.Add($next)
+								}
+
+								$batchId++
+								$payload = @{
+									schemaVersion = 1
+									bridgeInfo    = @{
+										batchId           = $batchId
+										servedAtUnixMs    = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+										pendingFrameCount = $frames.Count
+									}
+									frames = $frames.ToArray()
+								}
+
+								$sw = [System.Diagnostics.Stopwatch]::StartNew()
+								$json = $payload | ConvertTo-Json -Compress -Depth 6
+								$writer.Write("data: $json`n`n")
+								$sw.Stop()
+
+								# Expose for producer-side metrics (next frame will pick it up)
+								[Fanatec.Shared]::LastHttpTimeMs = $sw.Elapsed.TotalMilliseconds
+
+								$pingSw.Restart()
+							}
+							else {
+								if ($pingSw.ElapsedMilliseconds -ge $pingEveryMs) {
+									# SSE comment ping (ignored by client, but keeps the pipe alive)
+									$writer.Write(": ping`n`n")
+									$pingSw.Restart()
+								}
+							}
+						}
+					}
+					catch {
+Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -EntryType Warning -Message "line 1088"						# Most common cause: client disconnected (broken pipe) — just exit.
+					}
+					finally {
+						try { if ($writer) { $writer.Dispose() } } catch {}
+						try { $resp.Close() } catch {}
+						try { $gate.Release() | Out-Null } catch {}
+					}
+				}).AddArgument($state) | Out-Null
+Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -EntryType Warning -Message "line 1096"
+				$null = $ps2.BeginInvoke()
+			}
+			catch {
+				# If we fail before the worker begins, the worker won't release/close for us.
+				try { if ($srcId) { Unregister-Event -SourceIdentifier $srcId -ErrorAction SilentlyContinue } } catch {}
+				try { if ($srcId) { Remove-Event      -SourceIdentifier $srcId -ErrorAction SilentlyContinue } } catch {}
+				try { if ($ps2)   { $ps2.Dispose() } } catch {}
+				try { if ($rs2)   { $rs2.Close() } } catch {}
+				try { if ($rs2)   { $rs2.Dispose() } } catch {}
+Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -EntryType Warning -Message "line 1106"
+				$global:PedBridge_ActiveSseWorker = $null
+
+				try { $Ctx.Response.Close() } catch {}
+				try { $streamGate.Release() | Out-Null } catch {}
+				return
+			}
+		}
+
 
         $listener = New-Object System.Net.HttpListener
         foreach ($p in $prefixes) { $listener.Prefixes.Add($p) }
 
         try {
             $listener.Start()
-
+Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -EntryType Warning -Message "line 1121"
             while ($listener.IsListening -and -not [Fanatec.Shared]::StopSignal) {
                 $ctx = $null
                 try {
@@ -1046,6 +1130,7 @@ function Create-HttpServerInstance {
                 $req  = $ctx.Request
                 $resp = $ctx.Response
                 $path = $req.Url.AbsolutePath
+				
 
                 # Basic CORS/preflight support
                 if ($req.HttpMethod -eq "OPTIONS") {
@@ -1065,14 +1150,29 @@ function Create-HttpServerInstance {
 
                 if ($path -eq "/events") {
                     # Enforce single dashboard
-                    if (-not $streamGate.Wait(0)) {
-                        Send-SseBusyAndClose -Ctx $ctx
-                        continue
-                    }
+										
+					if (-not $streamGate.Wait(0)) {
 
-                    # Stream thread owns the response lifetime
-                    Start-SseStreamThread -Ctx $ctx
-                    continue
+						# Optional takeover: stop old SSE worker to avoid false "busy" on refresh
+						if ($global:PedBridge_ActiveSseWorker -and $global:PedBridge_ActiveSseWorker.Ps) {
+							try { $global:PedBridge_ActiveSseWorker.Ps.Stop() } catch {}
+
+							# give the worker a moment to hit its finally{} and release the gate
+							if ($streamGate.Wait(1000)) {
+								Start-SseStreamThread -Ctx $ctx
+								continue
+							}
+						}
+
+						Send-SseBusyAndClose -Ctx $ctx
+						continue
+					}
+
+Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -EntryType Warning -Message "line 1171"
+					Start-SseStreamThread -Ctx $ctx
+Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -EntryType Warning -Message "line 1173"
+					continue
+										
                 }
 
                 # Hard-disable old polling endpoint so you never accidentally use it again
@@ -1081,8 +1181,11 @@ function Create-HttpServerInstance {
                     use   = "/events (Server-Sent Events)"
                 }
             }
-        }
+        } catch {
+Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -EntryType Warning -Message "line 1185"
+		}
         finally {
+Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -EntryType Warning -Message "line 1188"
             try { if ($listener.IsListening) { $listener.Stop() } } catch {}
             try { $listener.Close() } catch {}
             try { $streamGate.Dispose() } catch {}
