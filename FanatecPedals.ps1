@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    FanatecPedals.ps1 v2.6.5
+    FanatecPedals.ps1 v2.6.6
     The Unified Fanatec Pedals Monitor and Telemetry Bridge.
     
 .DESCRIPTION
@@ -8,6 +8,7 @@
     Provides Async TTS alerts and an HTTP JSON Telemetry server.
     
     Version History:
+	2.6.6 - Added sampleAtUnixMs
 	2.6.5 - Moved to SSE HTTP
     2.6.4 - Added support for config .ini files, brake and clutch deadzones
 	2.6.3 - Added physical percents, removed interlocked batchId, other minor fixes
@@ -353,6 +354,8 @@ namespace Fanatec {
 
     [Serializable]
     public class PedalMonState {
+		public long sampleAtUnixMs;   // wall-clock ms since epoch at device sample time
+
         // Config & Flags
         public int verbose_flag;
         public int monitor_clutch;
@@ -1431,7 +1434,7 @@ try {
         # Static/Fixed now
         [uint32]$z=$u=$v=$rawGas=$rawBrake=$rawClutch=0
         $res = [Fanatec.Hardware]::GetPosition([uint32]$JoystickID, [uint32]$JoyFlags, [ref]$rawBrake, [ref]$rawGas, [ref]$z, [ref]$rawClutch, [ref]$u, [ref]$v)                
-
+		$state.sampleAtUnixMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 		
         # --- Handle Disconnect (main.c-compatible: publish disconnect/reconnect frames) ---
         if ($res -ne [Fanatec.Hardware]::JOYERR_NOERROR) {
