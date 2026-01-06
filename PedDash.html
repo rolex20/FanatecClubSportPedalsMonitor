@@ -178,7 +178,7 @@
     <div class="lag-summary">
       <div class="lag-main">Latency: <span id="hdr-total-lag" class="txt-red">--</span> ms</div>
       <div class="lag-details">
-        Ped: <span id="hdr-ped-lag">00</span> | Brg: <span id="hdr-brg-lag">00</span> | Dsh: <span id="hdr-dsh-lag">00</span>
+        Prod: <span id="hdr-ped-lag">00</span> | Queue: <span id="hdr-brg-lag">00</span> | JS: <span id="hdr-dsh-lag">00</span>
       </div>
     </div>
   </header>
@@ -230,10 +230,10 @@
     <div id="tab-lag" class="tab-content">
       <div class="lag-panel">
         <div class="lag-metrics-grid">
-          <div class="metric-card"><h3>Latency Total</h3><div class="value txt-red" id="card-total-lag">0 ms</div><div class="metric-avg" id="avg-total-lag">Avg: 0</div></div>
-          <div class="metric-card"><h3>PedMon (C)</h3><div class="value txt-cyan" id="card-ped-lag">0 ms</div><div class="metric-avg" id="avg-ped-lag">Avg: 0</div></div>
-          <div class="metric-card"><h3>Bridge (PS)</h3><div class="value txt-green" id="card-brg-lag">0 ms</div><div class="metric-avg" id="avg-brg-lag">Avg: 0</div></div>
-          <div class="metric-card"><h3>Dash (JS)</h3><div class="value txt-mag" id="card-dsh-lag">0 ms</div><div class="metric-avg" id="avg-dsh-lag">Avg: 0</div></div>
+          <div class="metric-card"><h3>Total (Sample → Handler)</h3><div class="value txt-red" id="card-total-lag">0 ms</div><div class="metric-avg" id="avg-total-lag">Avg: 0</div></div>
+          <div class="metric-card"><h3>Sample → Enqueue</h3><div class="value txt-cyan" id="card-ped-lag">0 ms</div><div class="metric-avg" id="avg-ped-lag">Avg: 0</div></div>
+          <div class="metric-card"><h3>Enqueue → Send</h3><div class="value txt-green" id="card-brg-lag">0 ms</div><div class="metric-avg" id="avg-brg-lag">Avg: 0</div></div>
+          <div class="metric-card"><h3>Send → JS Handler</h3><div class="value txt-mag" id="card-dsh-lag">0 ms</div><div class="metric-avg" id="avg-dsh-lag">Avg: 0</div></div>
         </div>
         <div class="chart-container"><canvas id="canvas-lag-chart"></canvas></div>
       </div>
@@ -648,9 +648,9 @@
       { title: "Raw Inputs", keys: ['rawGas', 'gasValue', 'rawBrake', 'brakeValue', 'rawClutch', 'clutchValue', 'axisMax', 'axis_normalization_enabled', 'joy_ID', 'joy_Flags'] },
       { title: "Logic State", keys: ['isRacing', 'peakGasInWindow', 'best_estimate_percent', 'lastFullThrottleTime', 'lastGasActivityTime', 'repeatingClutchCount'] },
       { title: "Pedal Tuning", keys: ['gas_deadzone_in', 'gas_deadzone_out', 'brake_deadzone_in', 'brake_deadzone_out', 'clutch_deadzone_in', 'clutch_deadzone_out', 'gas_min_usage_percent', 'gas_window', 'gas_timeout', 'auto_gas_deadzone_enabled'] },
-      { title: "Latency (ms)", keys: ['lagTotal', 'fullLoopTime_ms', 'metricLoopProcessMs', 'metricHttpProcessMs', 'metricTtsSpeakMs', 'lagDash', 'activeUpdateInterval'] },
+      { title: "Latency (ms)", keys: ['lagTotal', 'producerLagMs', 'queueWaitMs', 'lagDash', 'activeUpdateInterval', 'fullLoopTime_ms', 'metricLoopProcessMs', 'metricHttpProcessMs', 'metricTtsSpeakMs'] },
       { title: "Event Flags", keys: ['gas_alert_triggered', 'clutch_alert_triggered', 'gas_auto_adjust_applied', 'gas_estimate_decreased', 'controller_disconnected', 'controller_reconnected'] },
-      { title: "Diagnostics", keys: ['pedDashGetCount', 'algoMode', 'framesReceivedLastFetch', 'telemetry_sequence', 'batchId', 'receivedAtUnixMs', 'currentTime', 'pendingFrameCount'] }
+      { title: "Diagnostics", keys: ['pedDashGetCount', 'algoMode', 'framesReceivedLastFetch', 'telemetry_sequence', 'batchId', 'sampleAtUnixMs', 'enqueueAtUnixMs', 'sendAtUnixMs', 'receivedAtUnixMs', 'currentTime', 'pendingFrameCount'] }
     ];
 
 const TELE_DEFS = {
@@ -701,15 +701,19 @@ const TELE_DEFS = {
   gas_window:  { label: "Gas Window",  short: "gas_window: Seconds", long: "Seconds allowed without reaching full throttle (while isRacing) before a drift alert can fire. (Source: FanatecPedals / Producer)" },
   gas_timeout: { label: "Gas Timeout", short: "gas_timeout: Seconds", long: "Seconds of gas inactivity before isRacing auto-pauses (suppresses alerts/estimation until activity resumes). (Source: FanatecPedals / Producer)" },
   auto_gas_deadzone_enabled: { label: "Auto Adjust", short: "auto_gas_deadzone_enabled: Auto DZ-out", long: "When 1, producer may automatically reduce gas_deadzone_out down toward best_estimate_percent (respecting the configured minimum) and raise gas_auto_adjust_applied. (Source: FanatecPedals / Producer)" },
-
   // --- Latency & Timing (ms) ---
-  lagTotal: { label: "Total Latency", short: "lagTotal: UI composite estimate (ms)", long: "PedDash composite timing estimate (ms): fullLoopTime_ms (prev producer exec) + metricLoopProcessMs (current producer exec) + metricHttpProcessMs (last SSE write) + lagDash (served→UI). Useful for trends; not a strict ‘true latency’. (Source: PedDash / UI)" },
+  lagTotal: { label: "Total Latency", short: "lagTotal: Sample→JS handler ms", long: "End-to-end latency from pedal sample to this JS handler running. Uses per-frame timestamps: sampleAtUnixMs → enqueueAtUnixMs → sendAtUnixMs → Date.now(). (Source: PedDash / UI)" },
+  producerLagMs: { label: "Sample→Enqueue", short: "producerLagMs: Producer path ms", long: "Elapsed ms from device sample time (sampleAtUnixMs) until the frame was enqueued for SSE (enqueueAtUnixMs). Captures pedal read + bridge logic before hitting the queue. (Source: PedDash / UI)" },
+  queueWaitMs: { label: "Enqueue→Send", short: "queueWaitMs: Queue wait ms", long: "Time a frame sat in the telemetry queue before being written to the SSE stream (sendAtUnixMs − enqueueAtUnixMs). Reveals backlog/FFW impact. (Source: PedDash / UI)" },
+  lagDash: { label: "Send→JS Handler", short: "lagDash: Network/parse ms", long: "Time from when the bridge wrote the SSE event (sendAtUnixMs) until this handler executed (Date.now.). Includes network, buffering, and JS scheduling. (Source: PedDash / UI)" },
   fullLoopTime_ms: { label: "Loop Exec", short: "fullLoopTime_ms: Prev loop exec ms", long: "Producer loop execution time in ms for the PREVIOUS iteration (TickCount delta, excludes sleep). One-cycle delayed by design. (Source: FanatecPedals / Producer)" },
   metricLoopProcessMs: { label: "Loop Proc", short: "metricLoopProcessMs: Current loop ms", long: "Producer loop processing time (ms) measured by Stopwatch from loop start until telemetry publish. Includes WinMM poll + logic + enqueue. (Source: FanatecPedals / Producer)" },
-  metricHttpProcessMs: { label: "SSE Write", short: "metricHttpProcessMs: Server write ms", long: "Time the FanatecPedals HTTP/SSE server spent serializing + writing the most recent SSE telemetry event to the client (ms). (Source: FanatecPedals / Server)" },
+  metricHttpProcessMs: { label: "SSE Write", short: "metricHttpProcessMs: Server write ms", long: "Time the FanatecPedals HTTP/SSE server spent serializing + writing the most recent SSE telemetry event to the client (ms). (Source: FanatecPedals / Server)"},
   metricTtsSpeakMs: { label: "TTS Speak", short: "metricTtsSpeakMs: Speak call ms", long: "Time spent in the last Text-To-Speech speak call (ms). 0 when no TTS occurred recently. (Source: FanatecPedals / Producer)" },
-  lagDash: { label: "UI Lag", short: "lagDash: Served→JS ms", long: "Time from server servedAtUnixMs (wall-clock) to when this browser handled the SSE message (ms). Captures network + buffering + JS scheduling. (Source: PedDash / UI)" },
   activeUpdateInterval: { label: "Stream Δt", short: "activeUpdateInterval: Observed SSE ms", long: "Observed time between incoming SSE messages (ms), measured in the browser. This is the actual stream cadence, not a configured interval. (Source: PedDash / UI)" },
+  sampleAtUnixMs: { label: "Sample At", short: "sampleAtUnixMs: Pedal timestamp", long: "Wall-clock ms when the pedal sample was read on the producer thread. (Source: FanatecPedals / Producer)" },
+  enqueueAtUnixMs: { label: "Enqueue At", short: "enqueueAtUnixMs: Queue timestamp", long: "Wall-clock ms when the telemetry frame was enqueued for SSE delivery. (Source: FanatecPedals / Producer)" },
+  sendAtUnixMs: { label: "Send At", short: "sendAtUnixMs: SSE write timestamp", long: "Wall-clock ms captured just before the SSE batch was serialized and written to the client. (Source: PedDash / UI via bridge)" },
 
   // --- Event Flags ---
   gas_alert_triggered: { label: "Evt: Gas", short: "gas_alert_triggered: Drift alert", long: "Set to 1 on the frame where a gas drift alert is raised (full throttle not reached within gas_window while isRacing). Resets next frame. (Source: FanatecPedals / Producer)" },
@@ -1335,13 +1339,16 @@ const cachedGrad = (function() {
         // Store batch-level metadata for algo-debug export (still useful in SSE mode)
         if (frames.length > 0) {
           const newest = frames[frames.length - 1];
+          const oldest = frames[0];
+          const newestEnqueue = Number(newest.enqueueAtUnixMs ?? newest.bridgeEnqueueAtUnixMs ?? newest.receivedAtUnixMs);
+          const oldestEnqueue = Number(oldest.enqueueAtUnixMs ?? oldest.bridgeEnqueueAtUnixMs ?? oldest.receivedAtUnixMs);
           state.lastBatchMeta = {
             batchId: bi.batchId ?? newest.batchId ?? null,
-            servedAtUnixMs: bi.servedAtUnixMs ?? null,
+            servedAtUnixMs: bi.servedAtUnixMs ?? newest.sendAtUnixMs ?? null,
             framesInBatch: frames.length,
             pendingFrameCount: bi.pendingFrameCount ?? frames.length,
-            oldestEnqueueUnixMs: Number.isFinite(newest?.receivedAtUnixMs) ? newest.receivedAtUnixMs : null,
-            newestEnqueueUnixMs: Number.isFinite(newest?.receivedAtUnixMs) ? newest.receivedAtUnixMs : null
+            oldestEnqueueUnixMs: Number.isFinite(oldestEnqueue) ? oldestEnqueue : null,
+            newestEnqueueUnixMs: Number.isFinite(newestEnqueue) ? newestEnqueue : null
           };
         } else {
           state.lastBatchMeta = {
@@ -1363,12 +1370,15 @@ const cachedGrad = (function() {
         latest.pendingFrameCount = coalesced;         // keep existing diagnostics card meaningful
         latest.batchId = bi.batchId ?? latest.batchId;
 
-        // Preserve enqueue-time AND store served-time.
-        // Keep receivedAtUnixMs as "served" for backwards compatibility with your UI.
-        const enqueueAt = latest.receivedAtUnixMs;
+        const enqueueAt = Number(latest.enqueueAtUnixMs ?? latest.bridgeEnqueueAtUnixMs ?? latest.receivedAtUnixMs);
+        const sendAt = Number(latest.sendAtUnixMs ?? bi.servedAtUnixMs ?? latest.bridgeServedAtUnixMs ?? latest.receivedAtUnixMs);
+
         latest.bridgeEnqueueAtUnixMs = Number.isFinite(enqueueAt) ? enqueueAt : latest.bridgeEnqueueAtUnixMs;
-        latest.bridgeServedAtUnixMs = bi.servedAtUnixMs ?? state.lastBatchMeta?.servedAtUnixMs ?? latest.bridgeServedAtUnixMs;
-        latest.receivedAtUnixMs = latest.bridgeServedAtUnixMs ?? latest.receivedAtUnixMs;
+        latest.bridgeServedAtUnixMs = Number.isFinite(sendAt)
+          ? sendAt
+          : (bi.servedAtUnixMs ?? state.lastBatchMeta?.servedAtUnixMs ?? latest.bridgeServedAtUnixMs);
+        latest.enqueueAtUnixMs = Number.isFinite(enqueueAt) ? enqueueAt : latest.enqueueAtUnixMs;
+        latest.sendAtUnixMs = Number.isFinite(sendAt) ? sendAt : latest.sendAtUnixMs;
 
         state.isConnected = true;
         state.netFailStreak = 0;
@@ -1469,38 +1479,34 @@ const cachedGrad = (function() {
         f.telemetry_sequence_gap = 0;
       }
 
-      // OPTION B:
-      // Prefer bridge wall-clock timestamp so lagDash represents "bridge served → this JS handler ran".
-      // Falls back to the old measurement if servedAt isn't available.
-      const servedAtUnixMs =
-        (Number.isFinite(f.bridgeServedAtUnixMs) ? f.bridgeServedAtUnixMs :
-         Number.isFinite(f.receivedAtUnixMs) ? f.receivedAtUnixMs :
-         NaN);
+      const nowWall = Date.now();
+      const sampleAt = Number(f.sampleAtUnixMs);
+      const enqueueAt = Number(f.enqueueAtUnixMs ?? f.bridgeEnqueueAtUnixMs ?? f.receivedAtUnixMs);
+      const sendAt = Number(f.sendAtUnixMs ?? f.bridgeServedAtUnixMs ?? f.receivedAtUnixMs);
 
-      const dLag = Number.isFinite(servedAtUnixMs)
-        ? (Date.now() - servedAtUnixMs)
-        : (performance.now() - start);
+      const producerMs = (Number.isFinite(sampleAt) && Number.isFinite(enqueueAt)) ? Math.max(0, enqueueAt - sampleAt) : NaN;
+      const queueWaitMs = (Number.isFinite(sendAt) && Number.isFinite(enqueueAt)) ? Math.max(0, sendAt - enqueueAt) : NaN;
+      const handlerMs = Number.isFinite(sendAt)
+        ? Math.max(0, nowWall - sendAt)
+        : Math.max(0, performance.now() - start);
 
-      f.lagDash = dLag;
+      const e2e = Number.isFinite(sampleAt) ? Math.max(0, nowWall - sampleAt) : NaN;
+      const fallbackTotal = (f.fullLoopTime_ms||0) + (f.metricLoopProcessMs||0) + (f.metricHttpProcessMs||0) + handlerMs;
+      const total = Number.isFinite(e2e) ? e2e : fallbackTotal;
+
+      const pedVal = Number.isFinite(producerMs) ? producerMs : 0;
+      const queueVal = Number.isFinite(queueWaitMs) ? queueWaitMs : 0;
+      const handlerVal = Number.isFinite(handlerMs) ? handlerMs : 0;
+
+      f.lagDash = handlerVal;
+      f.queueWaitMs = queueWaitMs;
+      f.producerLagMs = producerMs;
+      f.lagTotal = total;
+      f.lagE2E = e2e;
       f.activeUpdateInterval = state.activeInterval;
       f.pedDashGetCount = state.getCounter;
       f.algoMode = config.ALGO_MODE;
 
-      const tLag = (f.fullLoopTime_ms||0) + (f.metricLoopProcessMs||0) + (f.metricHttpProcessMs||0) + dLag;
-      f.lagTotal = tLag;
-
-
-	// new lagE2E, overrides tLag above for more accurate measurement
-	const sampleAt = Number(f.sampleAtUnixMs);
-	if (Number.isFinite(sampleAt)) {
-	  f.lagE2E = Date.now() - sampleAt;   // true sample → JS-time (not paint yet)
-	} else {
-	  f.lagE2E = NaN;
-	}
-	const total = Number.isFinite(f.lagE2E) ? f.lagE2E : tLag;
-	f.lagTotal = total;
-	// state.target.lagT = total; // done below
-		
       state.target = {
         gasP: f.gas_physical_pct || 0,
         gasL: f.gas_logical_pct || 0,
@@ -1510,21 +1516,20 @@ const cachedGrad = (function() {
         brNorm: f.brakeValue || 0,
         clP: f.clutch_physical_pct || 0,
         clL: f.clutch_logical_pct || 0,
-        // lagT: tLag, // old calculation
-		lagT: total,
-        lagP: f.fullLoopTime_ms || 0,
-        lagB: (f.metricLoopProcessMs||0) + (f.metricHttpProcessMs||0),
-        lagD: dLag
+        lagT: total,
+        lagP: pedVal,
+        lagB: queueVal,
+        lagD: handlerVal
       };
 
       logFlagEvents(f);
 
       pushHistory(state.lagHistory, {
         t: Date.now(),
-        total: tLag,
-        ped: f.fullLoopTime_ms || 0,
-        brg: (f.metricLoopProcessMs||0) + (f.metricHttpProcessMs||0),
-        dash: dLag
+        total,
+        ped: pedVal,
+        brg: queueVal,
+        dash: handlerVal
       }, MAX_CHART_HISTORY);
 
       pushHistory(state.pedalHistory, {
