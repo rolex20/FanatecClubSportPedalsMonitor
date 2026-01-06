@@ -1489,6 +1489,18 @@ const cachedGrad = (function() {
       const tLag = (f.fullLoopTime_ms||0) + (f.metricLoopProcessMs||0) + (f.metricHttpProcessMs||0) + dLag;
       f.lagTotal = tLag;
 
+
+	// new lagE2E, overrides tLag above for more accurate measurement
+	const sampleAt = Number(f.sampleAtUnixMs);
+	if (Number.isFinite(sampleAt)) {
+	  f.lagE2E = Date.now() - sampleAt;   // true sample → JS-time (not paint yet)
+	} else {
+	  f.lagE2E = NaN;
+	}
+	const total = Number.isFinite(f.lagE2E) ? f.lagE2E : tLag;
+	f.lagTotal = total;
+	// state.target.lagT = total; // done below
+		
       state.target = {
         gasP: f.gas_physical_pct || 0,
         gasL: f.gas_logical_pct || 0,
@@ -1498,7 +1510,8 @@ const cachedGrad = (function() {
         brNorm: f.brakeValue || 0,
         clP: f.clutch_physical_pct || 0,
         clL: f.clutch_logical_pct || 0,
-        lagT: tLag,
+        // lagT: tLag, // old calculation
+		lagT: total,
         lagP: f.fullLoopTime_ms || 0,
         lagB: (f.metricLoopProcessMs||0) + (f.metricHttpProcessMs||0),
         lagD: dLag
