@@ -354,7 +354,9 @@ namespace Fanatec {
 
     [Serializable]
     public class PedalMonState {
-		public long sampleAtUnixMs;   // wall-clock ms since epoch at device sample time
+                public long sampleAtUnixMs;    // wall-clock ms since epoch at device sample time
+                public long enqueueAtUnixMs;   // wall-clock ms captured at enqueue (producer -> queue)
+                public long sendAtUnixMs;      // wall-clock ms captured at SSE write time
 
         // Config & Flags
         public int verbose_flag;
@@ -798,6 +800,7 @@ function Publish-TelemetryFrame {
         $State.telemetry_sequence = [uint32]$TelemetrySeq.Value
 
         $State.receivedAtUnixMs       = [DateTimeOffset]::Now.ToUnixTimeMilliseconds()
+        $State.enqueueAtUnixMs        = $State.receivedAtUnixMs
         $State.metricHttpProcessMs    = [Fanatec.Shared]::LastHttpTimeMs
         $State.metricTtsSpeakMs       = [Fanatec.Shared]::LastTtsTimeMs
         $State.metricLoopProcessMs    = $Stopwatch.Elapsed.TotalMilliseconds - $LoopStartMs
@@ -1020,23 +1023,29 @@ Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -Entr
 							[void]$frames.Add($tmp)
 						}
 
-						if ($frames.Count -gt 0) {
-							$batchId++
-							$payload = @{
-								schemaVersion = 1
-								bridgeInfo    = @{
-									batchId           = $batchId
-									servedAtUnixMs    = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-									pendingFrameCount = $frames.Count
-								}
-								frames = $frames
-							}
+                                                if ($frames.Count -gt 0) {
+                                                        $batchId++
+                                                        $payload = @{
+                                                                schemaVersion = 1
+                                                                bridgeInfo    = @{
+                                                                        batchId           = $batchId
+                                                                        servedAtUnixMs    = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+                                                                        pendingFrameCount = $frames.Count
+                                                                }
+                                                                frames = $frames
+                                                        }
 
-							$sw = [System.Diagnostics.Stopwatch]::StartNew()
-							$json = $payload | ConvertTo-Json -Compress -Depth 6
-							$writer.Write("data: $json`n`n")
-							$sw.Stop()
-							[Fanatec.Shared]::LastHttpTimeMs = $sw.Elapsed.TotalMilliseconds
+                                                        $sendAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+                                                        foreach ($f in $frames) {
+                                                                if (-not $f.enqueueAtUnixMs) { $f.enqueueAtUnixMs = $f.receivedAtUnixMs }
+                                                                $f.sendAtUnixMs = $sendAt
+                                                        }
+
+                                                        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+                                                        $json = $payload | ConvertTo-Json -Compress -Depth 6
+                                                        $writer.Write("data: $json`n`n")
+                                                        $sw.Stop()
+                                                        [Fanatec.Shared]::LastHttpTimeMs = $sw.Elapsed.TotalMilliseconds
 						}
 
 						# Heartbeat ping (keeps intermediaries from timing out idle streams)
@@ -1057,21 +1066,27 @@ Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -Entr
 									[void]$frames.Add($next)
 								}
 
-								$batchId++
-								$payload = @{
-									schemaVersion = 1
-									bridgeInfo    = @{
-										batchId           = $batchId
-										servedAtUnixMs    = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-										pendingFrameCount = $frames.Count
-									}
-									frames = $frames.ToArray()
-								}
+                                                                $batchId++
+                                                                $payload = @{
+                                                                        schemaVersion = 1
+                                                                        bridgeInfo    = @{
+                                                                                batchId           = $batchId
+                                                                                servedAtUnixMs    = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+                                                                                pendingFrameCount = $frames.Count
+                                                                        }
+                                                                        frames = $frames.ToArray()
+                                                                }
 
-								$sw = [System.Diagnostics.Stopwatch]::StartNew()
-								$json = $payload | ConvertTo-Json -Compress -Depth 6
-								$writer.Write("data: $json`n`n")
-								$sw.Stop()
+                                                                $sendAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+                                                                foreach ($f in $frames) {
+                                                                        if (-not $f.enqueueAtUnixMs) { $f.enqueueAtUnixMs = $f.receivedAtUnixMs }
+                                                                        $f.sendAtUnixMs = $sendAt
+                                                                }
+
+                                                                $sw = [System.Diagnostics.Stopwatch]::StartNew()
+                                                                $json = $payload | ConvertTo-Json -Compress -Depth 6
+                                                                $writer.Write("data: $json`n`n")
+                                                                $sw.Stop()
 
 								# Expose for producer-side metrics (next frame will pick it up)
 								[Fanatec.Shared]::LastHttpTimeMs = $sw.Elapsed.TotalMilliseconds
