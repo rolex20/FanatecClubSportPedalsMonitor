@@ -955,10 +955,10 @@ function Create-HttpServerInstance {
                 $resp.Close()
             }
         }
-Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -EntryType Warning -Message "line 905"
+
 		function Start-SseStreamThread {
 			param([System.Net.HttpListenerContext]$Ctx)
-Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -EntryType Warning -Message "line 908"
+
 			# -------------------------------------------------------------------------
 			# Refresh-safe cleanup (prevents runspace/PS instance leaks across reconnects)
 			# -------------------------------------------------------------------------
@@ -1020,7 +1020,7 @@ Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -Entr
 							[System.Management.Automation.PSInvocationState]::Failed,
 							[System.Management.Automation.PSInvocationState]::Stopped
 						)
-Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -EntryType Warning -Message "line 970"
+
 						if ($EventArgs.InvocationStateInfo.State -in $doneStates) {
 							$md = $Event.MessageData
 
@@ -1059,7 +1059,7 @@ Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -Entr
 						$resp.ContentType = "text/event-stream"
 						$resp.SendChunked = $true
 						$resp.KeepAlive   = $true
-Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -EntryType Warning -Message "line 1009"
+
 						$writer = New-Object System.IO.StreamWriter($resp.OutputStream, $enc)
 						$writer.AutoFlush = $true
 
@@ -1150,7 +1150,7 @@ Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -Entr
 						}
 					}
 					catch {
-Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -EntryType Warning -Message "line 1088"						# Most common cause: client disconnected (broken pipe) — just exit.
+
 					}
 					finally {
 						try { if ($writer) { $writer.Dispose() } } catch {}
@@ -1158,7 +1158,7 @@ Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -Entr
 						try { $gate.Release() | Out-Null } catch {}
 					}
 				}).AddArgument($state) | Out-Null
-Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -EntryType Warning -Message "line 1096"
+
 				$null = $ps2.BeginInvoke()
 			}
 			catch {
@@ -1168,7 +1168,7 @@ Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -Entr
 				try { if ($ps2)   { $ps2.Dispose() } } catch {}
 				try { if ($rs2)   { $rs2.Close() } } catch {}
 				try { if ($rs2)   { $rs2.Dispose() } } catch {}
-Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -EntryType Warning -Message "line 1106"
+
 				$global:PedBridge_ActiveSseWorker = $null
 
 				try { $Ctx.Response.Close() } catch {}
@@ -1183,7 +1183,7 @@ Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -Entr
 
         try {
             $listener.Start()
-Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -EntryType Warning -Message "line 1121"
+
             while ($listener.IsListening -and -not [Fanatec.Shared]::StopSignal) {
                 $ctx = $null
                 try {
@@ -1233,9 +1233,9 @@ Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -Entr
 						continue
 					}
 
-Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -EntryType Warning -Message "line 1171"
+
 					Start-SseStreamThread -Ctx $ctx
-Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -EntryType Warning -Message "line 1173"
+
 					continue
 										
                 }
@@ -1247,10 +1247,10 @@ Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -Entr
                 }
             }
         } catch {
-Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -EntryType Warning -Message "line 1185"
+
 		}
         finally {
-Write-EventLog -LogName Application -Source "MyScriptSource" -EventId 1001 -EntryType Warning -Message "line 1188"
+
             try { if ($listener.IsListening) { $listener.Stop() } } catch {}
             try { $listener.Close() } catch {}
             try { $streamGate.Dispose() } catch {}
