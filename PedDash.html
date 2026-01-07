@@ -63,6 +63,8 @@
     .lag-summary { text-align: right; font-family: monospace; display: flex; flex-direction: column; justify-content: center; }
     .lag-main { font-size: 1.6em; color: var(--text-main); font-weight: bold; line-height: 1.1; }
     .lag-details { font-size: 1.1em; color: var(--text-muted); margin-top: 2px; }
+    .lag-metric { cursor: help; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; }
+    .lag-metric:hover { color: #fff; }
 
     /* --- Navigation --- */
     nav { height: var(--tab-height); background-color: #0f0f16; display: flex; border-bottom: 1px solid #333; flex-shrink: 0; }
@@ -176,9 +178,9 @@
       <div id="ffw-indicator" class="pill pill-ffw">⏩ FFW CATCH-UP</div>
     </div>
     <div class="lag-summary">
-      <div class="lag-main">Latency: <span id="hdr-total-lag" class="txt-red">--</span> ms</div>
+      <div class="lag-main">Latency: <span id="hdr-total-lag" class="txt-red lag-metric" data-tele-key="lagTotal">--</span> ms</div>
       <div class="lag-details">
-        Prod: <span id="hdr-ped-lag">00</span> | Queue: <span id="hdr-brg-lag">00</span> | JS: <span id="hdr-dsh-lag">00</span> | Paint: <span id="hdr-paint-lag">00</span>
+        Prod: <span id="hdr-ped-lag" class="lag-metric" data-tele-key="producerLagMs">00</span> | Queue: <span id="hdr-brg-lag" class="lag-metric" data-tele-key="queueWaitMs">00</span> | JS: <span id="hdr-dsh-lag" class="lag-metric" data-tele-key="lagDash">00</span> | Paint: <span id="hdr-paint-lag" class="lag-metric" data-tele-key="lagPaint">00</span>
       </div>
     </div>
   </header>
@@ -1842,14 +1844,7 @@ function renderLoop(timestamp) {
           card.onmousemove = (e) => moveHoverTip(e);
           card.onmouseleave = () => hideHoverTip();
 
-          card.onclick = () => {
-            const title = document.getElementById('modal-title');
-            const desc  = document.getElementById('modal-desc');
-            const overlay = document.getElementById('modal-overlay');
-            if (title) title.textContent = def.label;
-            if (desc)  desc.textContent = def.long || "";
-            if (overlay) overlay.classList.add('open');
-          };
+          card.onclick = () => openTelemetryModal(def);
 
           gridDiv.appendChild(card);
         });
@@ -1857,6 +1852,15 @@ function renderLoop(timestamp) {
         groupDiv.appendChild(gridDiv);
         container.appendChild(groupDiv);
       });
+    }
+
+    function openTelemetryModal(def) {
+      const title = document.getElementById('modal-title');
+      const desc  = document.getElementById('modal-desc');
+      const overlay = document.getElementById('modal-overlay');
+      if (title) title.textContent = def.label;
+      if (desc)  desc.textContent = def.long || "";
+      if (overlay) overlay.classList.add('open');
     }
 
     function showHoverTip(e, txt) {
@@ -1882,6 +1886,19 @@ function renderLoop(timestamp) {
     function closeModal() {
       const overlay = document.getElementById('modal-overlay');
       if (overlay) overlay.classList.remove('open');
+    }
+
+    function initHeaderLagMetrics() {
+      document.querySelectorAll('.lag-metric').forEach(el => {
+        const key = el.dataset.teleKey;
+        if (!key) return;
+        const def = TELE_DEFS[key] || { label: key, short: `${key}:`, long: "" };
+
+        el.addEventListener('mouseenter', (e) => showHoverTip(e, def.short));
+        el.addEventListener('mousemove', (e) => moveHoverTip(e));
+        el.addEventListener('mouseleave', () => hideHoverTip());
+        el.addEventListener('click', () => openTelemetryModal(def));
+      });
     }
 
     /**
@@ -1948,6 +1965,7 @@ function renderLoop(timestamp) {
       resetAlgoMetrics();
 
       initTelemetryUI();
+      initHeaderLagMetrics();
       logEvent("System", "Initializing Dashboard...");
       renderLoop();
       startTelemetryStream();
