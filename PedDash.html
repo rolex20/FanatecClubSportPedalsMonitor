@@ -649,7 +649,7 @@
       { title: "Raw Inputs", keys: ['rawGas', 'gasValue', 'rawBrake', 'brakeValue', 'rawClutch', 'clutchValue', 'axisMax', 'axis_normalization_enabled', 'joy_ID', 'joy_Flags'] },
       { title: "Logic State", keys: ['isRacing', 'peakGasInWindow', 'best_estimate_percent', 'lastFullThrottleTime', 'lastGasActivityTime', 'repeatingClutchCount'] },
       { title: "Pedal Tuning", keys: ['gas_deadzone_in', 'gas_deadzone_out', 'brake_deadzone_in', 'brake_deadzone_out', 'clutch_deadzone_in', 'clutch_deadzone_out', 'gas_min_usage_percent', 'gas_window', 'gas_timeout', 'auto_gas_deadzone_enabled'] },
-      { title: "Latency (ms)", keys: ['lagTotal', 'lagPaint', 'producerLagMs', 'queueWaitMs', 'lagDash', 'activeUpdateInterval', 'fullLoopTime_ms', 'metricLoopProcessMs', 'metricHttpProcessMs', 'metricTtsSpeakMs'] },
+      { title: "Latency (ms)", keys: ['lagTotal', 'lagPaint', 'producerLagMs', 'queueWaitMs', 'lagDash', 'jsProcessMs', 'activeUpdateInterval', 'fullLoopTime_ms', 'metricLoopProcessMs', 'metricHttpProcessMs', 'metricTtsSpeakMs'] },
       { title: "Event Flags", keys: ['gas_alert_triggered', 'clutch_alert_triggered', 'gas_auto_adjust_applied', 'gas_estimate_decreased', 'controller_disconnected', 'controller_reconnected'] },
       { title: "Diagnostics", keys: ['pedDashGetCount', 'algoMode', 'framesReceivedLastFetch', 'telemetry_sequence', 'batchId', 'sampleAtUnixMs', 'enqueueAtUnixMs', 'sendAtUnixMs', 'receivedAtUnixMs', 'currentTime', 'pendingFrameCount'] }
     ];
@@ -707,7 +707,8 @@ const TELE_DEFS = {
   lagPaint: { label: "Sample→Paint", short: "lagPaint: Sample→paint ms", long: "End-to-end latency from pedal sample to the first browser paint after PedDash updates. Computed via requestAnimationFrame using sampleAtUnixMs → Date.now(). (Source: PedDash / UI)" },
   producerLagMs: { label: "Sample→Enqueue", short: "producerLagMs: Producer path ms", long: "Elapsed ms from device sample time (sampleAtUnixMs) until the frame was enqueued for SSE (enqueueAtUnixMs). Captures pedal read + bridge logic before hitting the queue. (Source: PedDash / UI)" },
   queueWaitMs: { label: "Enqueue→Send", short: "queueWaitMs: Queue wait ms", long: "Time a frame sat in the telemetry queue before being written to the SSE stream (sendAtUnixMs − enqueueAtUnixMs). Reveals backlog/FFW impact. (Source: PedDash / UI)" },
-  lagDash: { label: "Send→JS Handler", short: "lagDash: Network/parse ms", long: "Time from when the bridge wrote the SSE event (sendAtUnixMs) until this handler executed (Date.now.). Includes network, buffering, and JS scheduling. (Source: PedDash / UI)" },
+  lagDash: { label: "Send→JS Handler", short: "lagDash: Network/buffer ms", long: "Time from when the bridge wrote the SSE event (sendAtUnixMs) until this handler started (Date.now.). Reflects transport, buffering, and JS scheduling before parsing. (Source: PedDash / UI)" },
+  jsProcessMs: { label: "JS Proc", short: "jsProcessMs: Parse+UI ms", long: "Time spent in the browser handling the SSE message, including JSON parsing and state/DOM updates, measured from the onmessage entry to after processFrame completes. (Source: PedDash / UI)" },
   fullLoopTime_ms: { label: "Loop Exec", short: "fullLoopTime_ms: Prev loop exec ms", long: "Producer loop execution time in ms for the PREVIOUS iteration (TickCount delta, excludes sleep). One-cycle delayed by design. (Source: FanatecPedals / Producer)" },
   metricLoopProcessMs: { label: "Loop Proc", short: "metricLoopProcessMs: Current loop ms", long: "Producer loop processing time (ms) measured by Stopwatch from loop start until telemetry publish. Includes WinMM poll + logic + enqueue. (Source: FanatecPedals / Producer)" },
   metricHttpProcessMs: { label: "SSE Write", short: "metricHttpProcessMs: Server write ms", long: "Time the FanatecPedals HTTP/SSE server spent serializing + writing the most recent SSE telemetry event to the client (ms). (Source: FanatecPedals / Server)"},
@@ -1318,6 +1319,8 @@ const cachedGrad = (function() {
       });
 
       evtSource.onmessage = (e) => {
+        const handlerStartPerf = performance.now();
+        const handlerStartWall = Date.now();
         const nowPerf = performance.now();
 
         // Observed cadence (time between SSE messages)
@@ -1390,7 +1393,9 @@ const cachedGrad = (function() {
         state.isConnected = true;
         state.netFailStreak = 0;
 
-        processFrame(latest, nowPerf);
+        processFrame(latest, nowPerf, handlerStartWall);
+        const handlerEndPerf = performance.now();
+        latest.jsProcessMs = Math.max(0, handlerEndPerf - handlerStartPerf);
 
         // Producer period approximation (kept for algo scoring / charts)
         const tP = (latest.sleep_Time || 100) + (latest.fullLoopTime_ms || 0);
@@ -1473,7 +1478,7 @@ const cachedGrad = (function() {
       });
     }
 
-    function processFrame(f, start) {
+    function processFrame(f, start, handlerStartWall) {
       state.frame = f;
 
       // Sequence gap tracking (queue dynamics + drop detection)
@@ -1486,7 +1491,7 @@ const cachedGrad = (function() {
         f.telemetry_sequence_gap = 0;
       }
 
-      const nowWall = Date.now();
+      const nowWall = Number.isFinite(handlerStartWall) ? handlerStartWall : Date.now();
       const sampleAt = Number(f.sampleAtUnixMs);
       const enqueueAt = Number(f.enqueueAtUnixMs ?? f.bridgeEnqueueAtUnixMs ?? f.receivedAtUnixMs);
       const sendAt = Number(f.sendAtUnixMs ?? f.bridgeServedAtUnixMs ?? f.receivedAtUnixMs);
