@@ -8,7 +8,7 @@
     Provides Async TTS alerts and an HTTP JSON Telemetry server.
     
     Version History:
-	2.6.6 - Added sampleAtUnixMs
+	2.6.6 - Added sampleAtUnixMs and per frame SSE lag data
 	2.6.5 - Moved to SSE HTTP
     2.6.4 - Added support for config .ini files, brake and clutch deadzones
 	2.6.3 - Added physical percents, removed interlocked batchId, other minor fixes
@@ -83,7 +83,28 @@ param (
 )
 
 # -----------------------------------------------------------------------------
-# SECTION 0: CONFIGURATION FILE SUPPORT
+# SECTION 0: TEXT STRINGS
+# -----------------------------------------------------------------------------
+$Strings = @{
+    Banner           = "Fanatec Pedals Monitor & Bridge v2.6.0 started."
+    Connected        = "Controller connected."
+    Disconnected     = "Controller disconnected. Waiting..."
+    LookingForDevice = "Looking for Controller VID:{0} PID:{1}..."
+    FoundDevice      = "Found at ID: {0}"
+    ScanFailed       = "Scan failed. Retrying in {0}s..."
+    
+    AlertRudder      = "Rudder."
+    AlertGasDrift    = "Gas {0} percent."
+    AlertNewEstimate = "New deadzone estimation {0} percent."
+    AlertAutoAdjust  = "Auto adjusted deadzone to {0} percent."
+    AutoPause        = "Gas: Auto-Pause (Idle for {0} s)."
+    ResumingActivity = "Gas: Activity Resumed."
+	Duplicate        = "Error.  Another instance of Fanatec Monitor is already running."
+}
+
+
+# -----------------------------------------------------------------------------
+# SECTION 1: CONFIGURATION FILE SUPPORT
 # -----------------------------------------------------------------------------
 $ConfigKeysApplied = [System.Collections.Generic.HashSet[string]]::new()
 
@@ -205,7 +226,7 @@ function Apply-ConfigFile {
 }
 
 # -----------------------------------------------------------------------------
-# SECTION 1: AUTO-HELP LOGIC
+# SECTION 2: AUTO-HELP LOGIC
 # -----------------------------------------------------------------------------
 $ShowHelp = $Help.IsPresent -or ($PSBoundParameters.Count -eq 0)
 
@@ -288,25 +309,6 @@ if ((-not $PSBoundParameters.ContainsKey('BrakeDeadzoneOut')) -and -not $hasBrak
 if ((-not $PSBoundParameters.ContainsKey('ClutchDeadzoneIn')) -and -not $hasClutchInConfig) { $ClutchDeadzoneIn = $GasDeadzoneIn }
 if ((-not $PSBoundParameters.ContainsKey('ClutchDeadzoneOut')) -and -not $hasClutchOutConfig) { $ClutchDeadzoneOut = $GasDeadzoneOut }
 
-# -----------------------------------------------------------------------------
-# SECTION 2: TEXT STRINGS
-# -----------------------------------------------------------------------------
-$Strings = @{
-    Banner           = "Fanatec Pedals Monitor & Bridge v2.6.0 started."
-    Connected        = "Controller connected."
-    Disconnected     = "Controller disconnected. Waiting..."
-    LookingForDevice = "Looking for Controller VID:{0} PID:{1}..."
-    FoundDevice      = "Found at ID: {0}"
-    ScanFailed       = "Scan failed. Retrying in {0}s..."
-    
-    AlertRudder      = "Rudder."
-    AlertGasDrift    = "Gas {0} percent."
-    AlertNewEstimate = "New deadzone estimation {0} percent."
-    AlertAutoAdjust  = "Auto adjusted deadzone to {0} percent."
-    AutoPause        = "Gas: Auto-Pause (Idle for {0} s)."
-    ResumingActivity = "Gas: Activity Resumed."
-	Duplicate        = "Error.  Another instance of Fanatec Monitor is already running."
-}
 
 # -----------------------------------------------------------------------------
 # SECTION 3: LOGIC SETUP
@@ -691,6 +693,51 @@ if (-not ([System.Management.Automation.PSTypeName]'Fanatec.Hardware').Type) {
 
 # -----------------------------------------------------------------------------
 # SECTION 5: HELPER FUNCTIONS
+
+function Test-SampleMatch {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [int]$Sample,
+
+        [Parameter(Mandatory)]
+        [ValidateRange(1, [int]::MaxValue)]
+        [int]$Count,
+
+        [Parameter(Mandatory)]
+        [int]$Repeated_Sample
+    )
+
+    # Script-scope, dynamically named history variable (avoids collisions)
+    $historyVarName = '{0}__History' -f $MyInvocation.MyCommand.Name
+
+    # Get or create the persistent Queue[int]
+    $existing = Get-Variable -Name $historyVarName -Scope Script -ErrorAction SilentlyContinue
+    if ($null -eq $existing -or $null -eq $existing.Value) {
+        $queue = [System.Collections.Generic.Queue[int]]::new()
+        Set-Variable -Name $historyVarName -Scope Script -Value $queue -Force
+    }
+    else {
+        $queue = [System.Collections.Generic.Queue[int]]$existing.Value
+    }
+
+    # Add the newest sample
+    $queue.Enqueue($Sample)
+
+    # Ensure the history never exceeds $Count
+    while ($queue.Count -gt $Count) {
+        [void]$queue.Dequeue()
+    }
+
+    # Only true if we have exactly $Count samples and they all match $Repeated_Sample
+    if ($queue.Count -lt $Count) { return $false }
+
+    foreach ($s in $queue) {
+        if ($s -ne $Repeated_Sample) { return $false }
+    }
+
+    return $true
+}
 
 function Set-ThisProcessPriorityAndAffinity {
     param(
@@ -1570,6 +1617,10 @@ try {
 
         $State.UpdatePercentages() # --- Percentages (Moved to C# for performance) ---
 
+# Check for 91
+if (Test-SampleMatch -Sample $State.gas_physical_pct -Count 3 -Repeated_Sample 91) {
+    Write-Host "Matched 3 consecutive samples of 91"
+}
 <#
         # --- Percentages ---
         $State.gas_physical_pct = [uint32](100 * $State.gasValue / $AxisMax)
