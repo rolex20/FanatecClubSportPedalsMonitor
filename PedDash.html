@@ -178,7 +178,7 @@
     <div class="lag-summary">
       <div class="lag-main">Latency: <span id="hdr-total-lag" class="txt-red">--</span> ms</div>
       <div class="lag-details">
-        Prod: <span id="hdr-ped-lag">00</span> | Queue: <span id="hdr-brg-lag">00</span> | JS: <span id="hdr-dsh-lag">00</span>
+        Prod: <span id="hdr-ped-lag">00</span> | Queue: <span id="hdr-brg-lag">00</span> | JS: <span id="hdr-dsh-lag">00</span> | Paint: <span id="hdr-paint-lag">00</span>
       </div>
     </div>
   </header>
@@ -230,6 +230,7 @@
     <div id="tab-lag" class="tab-content">
       <div class="lag-panel">
         <div class="lag-metrics-grid">
+          <div class="metric-card"><h3>Total (Sample → Paint)</h3><div class="value txt-red" id="card-total-paint">0 ms</div><div class="metric-avg" id="avg-total-paint">Avg: 0</div></div>
           <div class="metric-card"><h3>Total (Sample → Handler)</h3><div class="value txt-red" id="card-total-lag">0 ms</div><div class="metric-avg" id="avg-total-lag">Avg: 0</div></div>
           <div class="metric-card"><h3>Sample → Enqueue</h3><div class="value txt-cyan" id="card-ped-lag">0 ms</div><div class="metric-avg" id="avg-ped-lag">Avg: 0</div></div>
           <div class="metric-card"><h3>Enqueue → Send</h3><div class="value txt-green" id="card-brg-lag">0 ms</div><div class="metric-avg" id="avg-brg-lag">Avg: 0</div></div>
@@ -401,12 +402,12 @@
       activeInterval: 50,
       getCounter: 0,
       frame: {},
-      target: { gasP:0, gasL:0, brP:0, brL:0, brRaw:0, brNorm:0, clP:0, clL:0, lagT:0, lagP:0, lagB:0, lagD:0 },
-      display:{ gasP:0, gasL:0, brP:0, brL:0, brRaw:0, brNorm:0, clP:0, clL:0, lagT:0, lagP:0, lagB:0, lagD:0 },
+      target: { gasP:0, gasL:0, brP:0, brL:0, brRaw:0, brNorm:0, clP:0, clL:0, lagT:0, lagP:0, lagB:0, lagD:0, lagPaint:0 },
+      display:{ gasP:0, gasL:0, brP:0, brL:0, brRaw:0, brNorm:0, clP:0, clL:0, lagT:0, lagP:0, lagB:0, lagD:0, lagPaint:0 },
       lagHistory: [],
       pedalHistory: [],
       events: [],
-      avgLagT:0, avgLagP:0, avgLagB:0, avgLagD:0,
+      avgLagT:0, avgLagP:0, avgLagB:0, avgLagD:0, avgLagPaint:0,
       lastProducerPeriod: 100,
       netFailStreak: 0,
 
@@ -648,7 +649,7 @@
       { title: "Raw Inputs", keys: ['rawGas', 'gasValue', 'rawBrake', 'brakeValue', 'rawClutch', 'clutchValue', 'axisMax', 'axis_normalization_enabled', 'joy_ID', 'joy_Flags'] },
       { title: "Logic State", keys: ['isRacing', 'peakGasInWindow', 'best_estimate_percent', 'lastFullThrottleTime', 'lastGasActivityTime', 'repeatingClutchCount'] },
       { title: "Pedal Tuning", keys: ['gas_deadzone_in', 'gas_deadzone_out', 'brake_deadzone_in', 'brake_deadzone_out', 'clutch_deadzone_in', 'clutch_deadzone_out', 'gas_min_usage_percent', 'gas_window', 'gas_timeout', 'auto_gas_deadzone_enabled'] },
-      { title: "Latency (ms)", keys: ['lagTotal', 'producerLagMs', 'queueWaitMs', 'lagDash', 'activeUpdateInterval', 'fullLoopTime_ms', 'metricLoopProcessMs', 'metricHttpProcessMs', 'metricTtsSpeakMs'] },
+      { title: "Latency (ms)", keys: ['lagTotal', 'lagPaint', 'producerLagMs', 'queueWaitMs', 'lagDash', 'activeUpdateInterval', 'fullLoopTime_ms', 'metricLoopProcessMs', 'metricHttpProcessMs', 'metricTtsSpeakMs'] },
       { title: "Event Flags", keys: ['gas_alert_triggered', 'clutch_alert_triggered', 'gas_auto_adjust_applied', 'gas_estimate_decreased', 'controller_disconnected', 'controller_reconnected'] },
       { title: "Diagnostics", keys: ['pedDashGetCount', 'algoMode', 'framesReceivedLastFetch', 'telemetry_sequence', 'batchId', 'sampleAtUnixMs', 'enqueueAtUnixMs', 'sendAtUnixMs', 'receivedAtUnixMs', 'currentTime', 'pendingFrameCount'] }
     ];
@@ -703,6 +704,7 @@ const TELE_DEFS = {
   auto_gas_deadzone_enabled: { label: "Auto Adjust", short: "auto_gas_deadzone_enabled: Auto DZ-out", long: "When 1, producer may automatically reduce gas_deadzone_out down toward best_estimate_percent (respecting the configured minimum) and raise gas_auto_adjust_applied. (Source: FanatecPedals / Producer)" },
   // --- Latency & Timing (ms) ---
   lagTotal: { label: "Total Latency", short: "lagTotal: Sample→JS handler ms", long: "End-to-end latency from pedal sample to this JS handler running. Uses per-frame timestamps: sampleAtUnixMs → enqueueAtUnixMs → sendAtUnixMs → Date.now(). (Source: PedDash / UI)" },
+  lagPaint: { label: "Sample→Paint", short: "lagPaint: Sample→paint ms", long: "End-to-end latency from pedal sample to the first browser paint after PedDash updates. Computed via requestAnimationFrame using sampleAtUnixMs → Date.now(). (Source: PedDash / UI)" },
   producerLagMs: { label: "Sample→Enqueue", short: "producerLagMs: Producer path ms", long: "Elapsed ms from device sample time (sampleAtUnixMs) until the frame was enqueued for SSE (enqueueAtUnixMs). Captures pedal read + bridge logic before hitting the queue. (Source: PedDash / UI)" },
   queueWaitMs: { label: "Enqueue→Send", short: "queueWaitMs: Queue wait ms", long: "Time a frame sat in the telemetry queue before being written to the SSE stream (sendAtUnixMs − enqueueAtUnixMs). Reveals backlog/FFW impact. (Source: PedDash / UI)" },
   lagDash: { label: "Send→JS Handler", short: "lagDash: Network/parse ms", long: "Time from when the bridge wrote the SSE event (sendAtUnixMs) until this handler executed (Date.now.). Includes network, buffering, and JS scheduling. (Source: PedDash / UI)" },
@@ -1014,6 +1016,11 @@ const TELE_DEFS = {
       state.avgLagP = recent.reduce((s,i) => s + i.ped, 0) / len;
       state.avgLagB = recent.reduce((s,i) => s + i.brg, 0) / len;
       state.avgLagD = recent.reduce((s,i) => s + i.dash, 0) / len;
+      const paint = recent.reduce((s,i) => {
+        if (!Number.isFinite(i.paint)) return s;
+        return { sum: s.sum + i.paint, count: s.count + 1 };
+      }, { sum: 0, count: 0 });
+      state.avgLagPaint = paint.count ? (paint.sum / paint.count) : 0;
     }
 
     function logEvent(t, m) {
@@ -1519,18 +1526,22 @@ const cachedGrad = (function() {
         lagT: total,
         lagP: pedVal,
         lagB: queueVal,
-        lagD: handlerVal
+        lagD: handlerVal,
+        lagPaint: state.target.lagPaint || 0
       };
 
       logFlagEvents(f);
 
-      pushHistory(state.lagHistory, {
+      const lagHistoryEntry = {
         t: Date.now(),
         total,
         ped: pedVal,
         brg: queueVal,
-        dash: handlerVal
-      }, MAX_CHART_HISTORY);
+        dash: handlerVal,
+        paint: Number.isFinite(f.lagPaint) ? f.lagPaint : NaN
+      };
+
+      pushHistory(state.lagHistory, lagHistoryEntry, MAX_CHART_HISTORY);
 
       pushHistory(state.pedalHistory, {
         t: Date.now(),
@@ -1540,6 +1551,20 @@ const cachedGrad = (function() {
       }, MAX_CHART_HISTORY);
 
       calcAverages();
+
+      if (Number.isFinite(sampleAt)) {
+        const frameRef = f;
+        requestAnimationFrame(() => {
+          if (state.frame !== frameRef) return;
+          const paintNow = Date.now();
+          const lagPaint = Math.max(0, paintNow - sampleAt);
+          frameRef.lagPaint = lagPaint;
+          state.target.lagPaint = lagPaint;
+          state.display.lagPaint = lagPaint;
+          lagHistoryEntry.paint = lagPaint;
+          calcAverages();
+        });
+      }
 
 	// --- SAFETY WAKE-UP ---
 	// Force the renderer to run at least one frame 
@@ -1586,7 +1611,10 @@ function renderLoop(timestamp) {
   const dGas = Math.abs(state.target.gasP - state.display.gasP);
   const dBrake = Math.abs(state.target.brP - state.display.brP);
   const dClutch = Math.abs(state.target.clP - state.display.clP);
-  const dLag = Math.abs(state.target.lagT - state.display.lagT); // check lag ticker too
+  const dLag = Math.max(
+    Math.abs(state.target.lagT - state.display.lagT),
+    Math.abs(state.target.lagPaint - state.display.lagPaint)
+  ); // check lag ticker too
 
   // "Settled" means we are close enough to the target value
   const isSettled = (dGas < 0.1 && dBrake < 0.1 && dClutch < 0.1 && dLag < 1.0);
@@ -1615,6 +1643,7 @@ function renderLoop(timestamp) {
   state.display.lagP = state.target.lagP;
   state.display.lagB = state.target.lagB;
   state.display.lagD = state.target.lagD;
+  state.display.lagPaint = state.target.lagPaint;
 
   renderUI();
 
@@ -1669,10 +1698,12 @@ function renderLoop(timestamp) {
       if (els.ffwInd) els.ffwInd.classList.toggle('active', ffw);
 
       // Header metrics
-      safeSetText(els.hdrTotal, (state.display.lagT || 0).toFixed(0));
+      const headerLag = Number.isFinite(state.display.lagPaint) ? state.display.lagPaint : state.display.lagT;
+      safeSetText(els.hdrTotal, (headerLag || 0).toFixed(0));
       safeSetText(els.hdrPed,   (state.display.lagP || 0).toFixed(0));
       safeSetText(els.hdrBrg,   (state.display.lagB || 0).toFixed(0));
       safeSetText(els.hdrDsh,   (state.display.lagD || 0).toFixed(0));
+      safeSetText(els.hdrPaint, (state.display.lagPaint || 0).toFixed(0));
 
       if (state.currentTab === 'tab-racing') renderRacing();
       else if (state.currentTab === 'tab-lag') renderLag();
@@ -1700,11 +1731,13 @@ function renderLoop(timestamp) {
     }
 
     function renderLag() {
+      safeSetText(els.cardPaint, (state.display.lagPaint||0).toFixed(0) + " ms");
       safeSetText(els.cardTotal, (state.display.lagT||0).toFixed(0) + " ms");
       safeSetText(els.cardPed,   (state.display.lagP||0).toFixed(0) + " ms");
       safeSetText(els.cardBrg,   (state.display.lagB||0).toFixed(0) + " ms");
       safeSetText(els.cardDsh,   (state.display.lagD||0).toFixed(0) + " ms");
 
+      safeSetText(els.avgPaint, `Avg: ${state.avgLagPaint.toFixed(1)}`);
       safeSetText(els.avgTotal, `Avg: ${state.avgLagT.toFixed(1)}`);
       safeSetText(els.avgPed,   `Avg: ${state.avgLagP.toFixed(1)}`);
       safeSetText(els.avgBrg,   `Avg: ${state.avgLagB.toFixed(1)}`);
@@ -1859,6 +1892,7 @@ function renderLoop(timestamp) {
         hdrPed: document.getElementById('hdr-ped-lag'),
         hdrBrg: document.getElementById('hdr-brg-lag'),
         hdrDsh: document.getElementById('hdr-dsh-lag'),
+        hdrPaint: document.getElementById('hdr-paint-lag'),
 
         cvsGas: document.getElementById('canvas-gas'),
         cvsBrake: document.getElementById('canvas-brake'),
@@ -1877,10 +1911,12 @@ function renderLoop(timestamp) {
 
         tickerList: document.getElementById('ticker-list'),
 
+        cardPaint: document.getElementById('card-total-paint'),
         cardTotal: document.getElementById('card-total-lag'),
         cardPed: document.getElementById('card-ped-lag'),
         cardBrg: document.getElementById('card-brg-lag'),
         cardDsh: document.getElementById('card-dsh-lag'),
+        avgPaint: document.getElementById('avg-total-paint'),
         avgTotal: document.getElementById('avg-total-lag'),
         avgPed: document.getElementById('avg-ped-lag'),
         avgBrg: document.getElementById('avg-brg-lag'),
