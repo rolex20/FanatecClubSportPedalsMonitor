@@ -1362,11 +1362,11 @@ try {
 
     # Runtime Logic Variables
     $GasIdleMax = [uint32]($AxisMax * $GasDeadzoneIn / 100)
-    $GasFullMin = [uint32]($AxisMax * $GasDeadzoneOut / 100)
+    $GasFullMin = [uint32][math]::Floor(($AxisMax * $GasDeadzoneOut) / 100.0)
     $BrakeIdleMax = [uint32]($AxisMax * $BrakeDeadzoneIn / 100)
-    $BrakeFullMin = [uint32]($AxisMax * $BrakeDeadzoneOut / 100)
+    $BrakeFullMin = [uint32][math]::Floor(($AxisMax * $BrakeDeadzoneOut) / 100.0)
     $ClutchIdleMax = [uint32]($AxisMax * $ClutchDeadzoneIn / 100)
-    $ClutchFullMin = [uint32]($AxisMax * $ClutchDeadzoneOut / 100)
+    $ClutchFullMin = [uint32][math]::Floor(($AxisMax * $ClutchDeadzoneOut) / 100.0)
     $AxisMargin = [uint32]($AxisMax * $Margin / 100)
 
     # Precompute ms versions once (main.c does this to keep hot path clean)
@@ -1534,11 +1534,11 @@ try {
                     $State.axisMax = [uint32]$AxisMax
 
                     $GasIdleMax = [uint32]($AxisMax * $State.gas_deadzone_in  / 100)
-                    $GasFullMin = [uint32]($AxisMax * $State.gas_deadzone_out / 100)
+                    $GasFullMin = [uint32][math]::Floor(($AxisMax * $State.gas_deadzone_out) / 100.0)
                     $BrakeIdleMax = [uint32]($AxisMax * $State.brake_deadzone_in  / 100)
-                    $BrakeFullMin = [uint32]($AxisMax * $State.brake_deadzone_out / 100)
+                    $BrakeFullMin = [uint32][math]::Floor(($AxisMax * $State.brake_deadzone_out) / 100.0)
                     $ClutchIdleMax = [uint32]($AxisMax * $State.clutch_deadzone_in  / 100)
-                    $ClutchFullMin = [uint32]($AxisMax * $State.clutch_deadzone_out / 100)
+                    $ClutchFullMin = [uint32][math]::Floor(($AxisMax * $State.clutch_deadzone_out) / 100.0)
                     $AxisMargin = [uint32]($AxisMax * $State.margin / 100)
 
                     $State.gasIdleMax   = $GasIdleMax
@@ -1735,7 +1735,7 @@ if (Test-SampleMatch -Sample $State.gas_physical_pct -Count 3 -Repeated_Sample 9
 
                     # Update peak usage within current estimation window
                     if ($State.gasValue -gt $GasIdleMax) {
-                        $CurrentPercent = [uint32]($State.gasValue * 100 / $AxisMax)
+                        $CurrentPercent = [uint32][math]::Floor(($State.gasValue * 100.0) / $AxisMax)
                         $State.currentPercent = [uint32]$CurrentPercent
 
                         if ($CurrentPercent -gt $EstimateWindowPeakPercent) {
@@ -1775,7 +1775,7 @@ if (Test-SampleMatch -Sample $State.gas_physical_pct -Count 3 -Repeated_Sample 9
                                 $State.gas_deadzone_out = $GasDeadzoneOut
 
                                 # Recompute full-min and mirror into telemetry
-                                $GasFullMin = [uint32]($AxisMax * $GasDeadzoneOut / 100)
+                                $GasFullMin = [uint32][math]::Floor(($AxisMax * $GasDeadzoneOut) / 100.0)
                                 $State.gasFullMin = $GasFullMin
 
                                 $msg = $Strings.AlertAutoAdjust -f $GasDeadzoneOut
