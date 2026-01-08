@@ -39,7 +39,7 @@ $global:TtsSynth.Rate   = 0
 
 function global:Speak-ProcessEvent {
   param(
-    [Parameter(Mandatory=$true)][ValidateSet("Started","Stopped")]
+    [Parameter(Mandatory=$true)]
     [string] $EventType,
     [Parameter(Mandatory=$true)]
     [string] $ProcessName
