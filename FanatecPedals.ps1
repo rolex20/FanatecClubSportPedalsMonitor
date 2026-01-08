@@ -356,9 +356,11 @@ namespace Fanatec {
 
     [Serializable]
     public class PedalMonState {
-                public long sampleAtUnixMs;    // wall-clock ms since epoch at device sample time
-                public long enqueueAtUnixMs;   // wall-clock ms captured at enqueue (producer -> queue)
-                public long sendAtUnixMs;      // wall-clock ms captured at SSE write time
+                public long deviceReadStartUnixMs; // wall-clock ms just before GetPosition
+                public long deviceReadDurationMs;  // GetPosition duration in ms
+                public long sampleAtUnixMs;        // wall-clock ms since epoch at device sample read-start
+                public long enqueueAtUnixMs;       // wall-clock ms captured at enqueue (producer -> queue)
+                public long sendAtUnixMs;          // wall-clock ms captured at SSE write time
 
         // Config & Flags
         public int verbose_flag;
@@ -1495,9 +1497,13 @@ try {
 
         # Static/Fixed now
         [uint32]$z=$u=$v=$rawGas=$rawBrake=$rawClutch=0
-        $res = [Fanatec.Hardware]::GetPosition([uint32]$JoystickID, [uint32]$JoyFlags, [ref]$rawBrake, [ref]$rawGas, [ref]$z, [ref]$rawClutch, [ref]$u, [ref]$v)                
-		$state.sampleAtUnixMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-		
+        $deviceReadStartUnixMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        $deviceReadStartTick = [Environment]::TickCount64
+        $res = [Fanatec.Hardware]::GetPosition([uint32]$JoystickID, [uint32]$JoyFlags, [ref]$rawBrake, [ref]$rawGas, [ref]$z, [ref]$rawClutch, [ref]$u, [ref]$v)
+        $state.deviceReadStartUnixMs = $deviceReadStartUnixMs
+        $state.deviceReadDurationMs = [int64]([Environment]::TickCount64 - $deviceReadStartTick)
+        $state.sampleAtUnixMs = $deviceReadStartUnixMs
+
         # --- Handle Disconnect (main.c-compatible: publish disconnect/reconnect frames) ---
         if ($res -ne [Fanatec.Hardware]::JOYERR_NOERROR) {
 

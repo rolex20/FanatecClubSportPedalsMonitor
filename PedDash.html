@@ -653,7 +653,7 @@
       { title: "Pedal Tuning", keys: ['gas_deadzone_in', 'gas_deadzone_out', 'brake_deadzone_in', 'brake_deadzone_out', 'clutch_deadzone_in', 'clutch_deadzone_out', 'gas_min_usage_percent', 'gas_window', 'gas_timeout', 'auto_gas_deadzone_enabled'] },
       { title: "Latency (ms)", keys: ['lagTotal', 'lagPaint', 'producerLagMs', 'queueWaitMs', 'lagDash', 'jsProcessMs', 'activeUpdateInterval', 'fullLoopTime_ms', 'metricLoopProcessMs', 'metricHttpProcessMs', 'metricTtsSpeakMs'] },
       { title: "Event Flags", keys: ['gas_alert_triggered', 'clutch_alert_triggered', 'gas_auto_adjust_applied', 'gas_estimate_decreased', 'controller_disconnected', 'controller_reconnected'] },
-      { title: "Diagnostics", keys: ['pedDashGetCount', 'algoMode', 'framesReceivedLastFetch', 'telemetry_sequence', 'batchId', 'sampleAtUnixMs', 'enqueueAtUnixMs', 'sendAtUnixMs', 'receivedAtUnixMs', 'currentTime', 'pendingFrameCount'] }
+      { title: "Diagnostics", keys: ['pedDashGetCount', 'algoMode', 'framesReceivedLastFetch', 'telemetry_sequence', 'batchId', 'deviceReadStartUnixMs', 'deviceReadDurationMs', 'sampleAtUnixMs', 'enqueueAtUnixMs', 'sendAtUnixMs', 'receivedAtUnixMs', 'currentTime', 'pendingFrameCount'] }
     ];
 
 const TELE_DEFS = {
@@ -716,7 +716,9 @@ const TELE_DEFS = {
   metricHttpProcessMs: { label: "SSE Write", short: "metricHttpProcessMs: Server write ms", long: "Time the FanatecPedals HTTP/SSE server spent serializing + writing the most recent SSE telemetry event to the client (ms). (Source: FanatecPedals / Server)"},
   metricTtsSpeakMs: { label: "TTS Speak", short: "metricTtsSpeakMs: Speak call ms", long: "Time spent in the last Text-To-Speech speak call (ms). 0 when no TTS occurred recently. (Source: FanatecPedals / Producer)" },
   activeUpdateInterval: { label: "Stream Δt", short: "activeUpdateInterval: Observed SSE ms", long: "Observed time between incoming SSE messages (ms), measured in the browser. This is the actual stream cadence, not a configured interval. (Source: PedDash / UI)" },
-  sampleAtUnixMs: { label: "Sample At", short: "sampleAtUnixMs: Pedal timestamp", long: "Wall-clock ms when the pedal sample was read on the producer thread. (Source: FanatecPedals / Producer)" },
+  deviceReadStartUnixMs: { label: "Read Start", short: "deviceReadStartUnixMs: Read start", long: "Wall-clock ms captured immediately before the WinMM GetPosition call. (Source: FanatecPedals / Producer)" },
+  deviceReadDurationMs: { label: "Read Duration", short: "deviceReadDurationMs: Read ms", long: "Duration in ms for the WinMM GetPosition call to return. (Source: FanatecPedals / Producer)" },
+  sampleAtUnixMs: { label: "Sample At", short: "sampleAtUnixMs: Pedal timestamp", long: "Wall-clock ms when the pedal sample read started (same as deviceReadStartUnixMs). (Source: FanatecPedals / Producer)" },
   enqueueAtUnixMs: { label: "Enqueue At", short: "enqueueAtUnixMs: Queue timestamp", long: "Wall-clock ms when the telemetry frame was enqueued for SSE delivery. (Source: FanatecPedals / Producer)" },
   sendAtUnixMs: { label: "Send At", short: "sendAtUnixMs: SSE write timestamp", long: "Wall-clock ms captured just before the SSE batch was serialized and written to the client. (Source: PedDash / UI via bridge)" },
 
