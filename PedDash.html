@@ -458,7 +458,7 @@
     /**
      * 2.1 ALGO DEBUG SCORING + RING BUFFER (PedDash-generated)
      *
-     * - Samples: successful GET responses (one HTTP response == one sample)
+     * - Samples: SSE telemetry updates (one SSE message == one sample)
      * - Success: FRAMES RX == 1
      * - Accuracy: successes/samples * 100 (3 decimals)
      * - RunTime: seconds since last reset (1 decimal)
@@ -716,7 +716,7 @@ const TELE_DEFS = {
   metricLoopProcessMs: { label: "Loop Proc", short: "metricLoopProcessMs: Current loop ms", long: "Producer loop processing time (ms) measured by Stopwatch from loop start until telemetry publish. Includes WinMM poll + logic + enqueue. (Source: FanatecPedals / Producer)" },
   metricHttpProcessMs: { label: "SSE Write", short: "metricHttpProcessMs: Server write ms", long: "Time the FanatecPedals HTTP/SSE server spent serializing + writing the most recent SSE telemetry event to the client (ms). (Source: FanatecPedals / Server)"},
   metricTtsSpeakMs: { label: "TTS Speak", short: "metricTtsSpeakMs: Speak call ms", long: "Time spent in the last Text-To-Speech speak call (ms). 0 when no TTS occurred recently. (Source: FanatecPedals / Producer)" },
-  lastFetchCycleMs: { label: "Fetch Δt", short: "lastFetchCycleMs: perf.now Δt", long: "Observed inter-message cadence measured via performance.now between SSE onmessage callbacks. (Source: PedDash / UI)" },
+  lastFetchCycleMs: { label: "Stream Δt", short: "lastFetchCycleMs: SSE Δt", long: "Observed inter-message cadence measured via performance.now between SSE onmessage callbacks. (Source: PedDash / UI)" },
   activeUpdateInterval: { label: "Stream Δt", short: "activeUpdateInterval: Observed SSE ms", long: "Observed time between incoming SSE messages (ms), measured in the browser. This is the actual stream cadence, not a configured interval. (Source: PedDash / UI)" },
   queueAgeOldestMs: { label: "Queue Age", short: "queueAgeOldestMs: Oldest→served ms", long: "Age of the oldest frame in the SSE batch, computed as servedAtUnixMs − oldest enqueue timestamp. Indicates backlog age for coalesced batches. (Source: PedDash / UI)" },
   queueSpanMs: { label: "Queue Span", short: "queueSpanMs: Oldest→newest ms", long: "Span between oldest and newest enqueue timestamps within the SSE batch. Captures how much producer time is represented in a coalesced message. (Source: PedDash / UI)" },
@@ -750,7 +750,7 @@ const TELE_DEFS = {
   currentTime: { label: "TickCount", short: "currentTime: TickCount ms", long: "Environment.TickCount at capture time (ms since boot; wraps ~49 days). Used by producer logic for windows/timeouts. (Source: FanatecPedals / Producer)" },
 
   /* --- PedDash-generated algorithm scoring metrics (shown only when ENABLE_ALGO_DEBUG is checked) --- */
-  algoSamples: { label: "Algo Samples", short: "algoSamples: Telemetry updates", long: "Count of telemetry updates processed for the current algo run (SSE messages). Resets on ALGO_MODE change or ENABLE_ALGO_DEBUG toggle. (Source: PedDash / UI)" },
+  algoSamples: { label: "Algo Samples", short: "algoSamples: SSE updates", long: "Count of SSE messages / telemetry updates processed for the current algo run (incremented once per EventSource onmessage). Resets on ALGO_MODE change or ENABLE_ALGO_DEBUG toggle. (Source: PedDash / UI)" },
   algoSuccesses: { label: "Algo Successes", short: "algoSuccesses: FRAMES RX == 1", long: "Number of samples where FRAMES RX was exactly 1 (one producer frame per SSE message) for the current algo run. Resets on ALGO_MODE change or ENABLE_ALGO_DEBUG toggle. (Source: PedDash / UI)" },
   algoAccuracyPct: { label: "Algo Accuracy %", short: "algoAccuracyPct: Success rate", long: "Percent of samples where FRAMES RX == 1. Range 0–100 with 3 decimals. Resets on ALGO_MODE change or ENABLE_ALGO_DEBUG toggle. (Source: PedDash / UI)" },
   algoRunTimeSec: { label: "Algo Run Time", short: "algoRunTimeSec: Seconds", long: "Seconds the current algo run has been active since last reset (ALGO_MODE change or ENABLE_ALGO_DEBUG toggle). (Source: PedDash / UI)" }
