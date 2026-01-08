@@ -651,9 +651,9 @@
       { title: "Raw Inputs", keys: ['rawGas', 'gasValue', 'rawBrake', 'brakeValue', 'rawClutch', 'clutchValue', 'axisMax', 'axis_normalization_enabled', 'joy_ID', 'joy_Flags'] },
       { title: "Logic State", keys: ['isRacing', 'peakGasInWindow', 'best_estimate_percent', 'lastFullThrottleTime', 'lastGasActivityTime', 'repeatingClutchCount'] },
       { title: "Pedal Tuning", keys: ['gas_deadzone_in', 'gas_deadzone_out', 'brake_deadzone_in', 'brake_deadzone_out', 'clutch_deadzone_in', 'clutch_deadzone_out', 'gas_min_usage_percent', 'gas_window', 'gas_timeout', 'auto_gas_deadzone_enabled'] },
-      { title: "Latency (ms)", keys: ['lagTotal', 'lagPaint', 'producerLagMs', 'queueWaitMs', 'lagDash', 'jsProcessMs', 'activeUpdateInterval', 'fullLoopTime_ms', 'metricLoopProcessMs', 'metricHttpProcessMs', 'metricTtsSpeakMs'] },
+      { title: "Latency (ms)", keys: ['lagTotal', 'lagE2E', 'lagPaint', 'producerLagMs', 'queueWaitMs', 'lagDash', 'jsProcessMs', 'lastFetchCycleMs', 'activeUpdateInterval', 'queueAgeOldestMs', 'queueSpanMs', 'fullLoopTime_ms', 'metricLoopProcessMs', 'metricHttpProcessMs', 'metricTtsSpeakMs'] },
       { title: "Event Flags", keys: ['gas_alert_triggered', 'clutch_alert_triggered', 'gas_auto_adjust_applied', 'gas_estimate_decreased', 'controller_disconnected', 'controller_reconnected'] },
-      { title: "Diagnostics", keys: ['pedDashGetCount', 'algoMode', 'framesReceivedLastFetch', 'telemetry_sequence', 'batchId', 'deviceReadStartUnixMs', 'deviceReadDurationMs', 'sampleAtUnixMs', 'enqueueAtUnixMs', 'sendAtUnixMs', 'receivedAtUnixMs', 'currentTime', 'pendingFrameCount'] }
+      { title: "Diagnostics", keys: ['pedDashGetCount', 'algoMode', 'framesReceivedLastFetch', 'framesInBatch', 'telemetry_sequence', 'telemetry_sequence_gap', 'batchId', 'deviceReadStartUnixMs', 'deviceReadDurationMs', 'sampleAtUnixMs', 'enqueueAtUnixMs', 'sendAtUnixMs', 'bridgeEnqueueAtUnixMs', 'bridgeServedAtUnixMs', 'receivedAtUnixMs', 'currentTime', 'pendingFrameCount'] }
     ];
 
 const TELE_DEFS = {
@@ -706,6 +706,7 @@ const TELE_DEFS = {
   auto_gas_deadzone_enabled: { label: "Auto Adjust", short: "auto_gas_deadzone_enabled: Auto DZ-out", long: "When 1, producer may automatically reduce gas_deadzone_out down toward best_estimate_percent (respecting the configured minimum) and raise gas_auto_adjust_applied. (Source: FanatecPedals / Producer)" },
   // --- Latency & Timing (ms) ---
   lagTotal: { label: "Total Latency", short: "lagTotal: Sample→JS handler ms", long: "End-to-end latency from pedal sample to this JS handler running. Uses per-frame timestamps: sampleAtUnixMs → enqueueAtUnixMs → sendAtUnixMs → Date.now(). (Source: PedDash / UI)" },
+  lagE2E: { label: "E2E Latency", short: "lagE2E: sampleAt→handler ms", long: "Explicit sampleAtUnixMs → JS handler wall-clock latency (Date.now at handler entry). Independent of enqueue/send timestamps. (Source: PedDash / UI)" },
   lagPaint: { label: "Sample→Paint", short: "lagPaint: Sample→paint ms", long: "End-to-end latency from pedal sample to the first browser paint after PedDash updates. Computed via requestAnimationFrame using sampleAtUnixMs → Date.now(). (Source: PedDash / UI)" },
   producerLagMs: { label: "Sample→Enqueue", short: "producerLagMs: Producer path ms", long: "Elapsed ms from device sample time (sampleAtUnixMs) until the frame was enqueued for SSE (enqueueAtUnixMs). Captures pedal read + bridge logic before hitting the queue. (Source: PedDash / UI)" },
   queueWaitMs: { label: "Enqueue→Send", short: "queueWaitMs: Queue wait ms", long: "Time a frame sat in the telemetry queue before being written to the SSE stream (sendAtUnixMs − enqueueAtUnixMs). Reveals backlog/FFW impact. (Source: PedDash / UI)" },
@@ -715,7 +716,10 @@ const TELE_DEFS = {
   metricLoopProcessMs: { label: "Loop Proc", short: "metricLoopProcessMs: Current loop ms", long: "Producer loop processing time (ms) measured by Stopwatch from loop start until telemetry publish. Includes WinMM poll + logic + enqueue. (Source: FanatecPedals / Producer)" },
   metricHttpProcessMs: { label: "SSE Write", short: "metricHttpProcessMs: Server write ms", long: "Time the FanatecPedals HTTP/SSE server spent serializing + writing the most recent SSE telemetry event to the client (ms). (Source: FanatecPedals / Server)"},
   metricTtsSpeakMs: { label: "TTS Speak", short: "metricTtsSpeakMs: Speak call ms", long: "Time spent in the last Text-To-Speech speak call (ms). 0 when no TTS occurred recently. (Source: FanatecPedals / Producer)" },
+  lastFetchCycleMs: { label: "Fetch Δt", short: "lastFetchCycleMs: perf.now Δt", long: "Observed inter-message cadence measured via performance.now between SSE onmessage callbacks. (Source: PedDash / UI)" },
   activeUpdateInterval: { label: "Stream Δt", short: "activeUpdateInterval: Observed SSE ms", long: "Observed time between incoming SSE messages (ms), measured in the browser. This is the actual stream cadence, not a configured interval. (Source: PedDash / UI)" },
+  queueAgeOldestMs: { label: "Queue Age", short: "queueAgeOldestMs: Oldest→served ms", long: "Age of the oldest frame in the SSE batch, computed as servedAtUnixMs − oldest enqueue timestamp. Indicates backlog age for coalesced batches. (Source: PedDash / UI)" },
+  queueSpanMs: { label: "Queue Span", short: "queueSpanMs: Oldest→newest ms", long: "Span between oldest and newest enqueue timestamps within the SSE batch. Captures how much producer time is represented in a coalesced message. (Source: PedDash / UI)" },
   deviceReadStartUnixMs: { label: "Read Start", short: "deviceReadStartUnixMs: Read start", long: "Wall-clock ms captured immediately before the WinMM GetPosition call. (Source: FanatecPedals / Producer)" },
   deviceReadDurationMs: { label: "Read Duration", short: "deviceReadDurationMs: Read ms", long: "Duration in ms for the WinMM GetPosition call to return. (Source: FanatecPedals / Producer)" },
   sampleAtUnixMs: { label: "Sample At", short: "sampleAtUnixMs: Pedal timestamp", long: "Wall-clock ms when the pedal sample read started (same as deviceReadStartUnixMs). (Source: FanatecPedals / Producer)" },
@@ -734,11 +738,15 @@ const TELE_DEFS = {
   pedDashGetCount: { label: "Msg Count", short: "pedDashGetCount: SSE messages", long: "Total SSE telemetry messages received since page load. (Source: PedDash / UI)" },
   algoMode: { label: "Algo Mode", short: "algoMode: Selected strategy", long: "Selected PedDash strategy (ALGO_MODE). In SSE push mode it does not control the stream; it’s used for scoring/visualization and legacy math paths. (Source: PedDash / UI)" },
   framesReceivedLastFetch: { label: "Frames Rx", short: "framesReceivedLastFetch: Burst size", long: "Number of producer frames coalesced into the latest SSE message (burst size). Drives FRAMES RX and the FFW indicator when >1. (Source: PedDash / UI + Server metadata)" },
+  framesInBatch: { label: "Batch Frames", short: "framesInBatch: SSE batch size", long: "Number of telemetry frames included in the SSE message. Mirrors the frames array length in the SSE payload. (Source: PedDash / UI + Server metadata)" },
   pendingFrameCount: { label: "Coalesced", short: "pendingFrameCount: Alias of burst size", long: "In SSE mode this is intentionally set equal to the burst size (same as FRAMES RX) for backwards compatibility. It is NOT the live queue depth. (Source: PedDash / UI)" },
 
   telemetry_sequence: { label: "Seq ID", short: "telemetry_sequence: Producer frame id", long: "Monotonic producer sequence number incremented per produced telemetry frame. Useful for detecting drops (seq gaps). (Source: FanatecPedals / Producer)" },
+  telemetry_sequence_gap: { label: "Seq Gap", short: "telemetry_sequence_gap: Seq delta", long: "Gap since the last delivered telemetry_sequence. In SSE mode this includes coalesced and dropped frames between messages. (Source: PedDash / UI)" },
   batchId: { label: "Batch ID", short: "batchId: SSE message id", long: "Monotonic server batch/message id incremented per SSE event sent to the client. (Source: FanatecPedals / Server)" },
   receivedAtUnixMs: { label: "ServedAt", short: "receivedAtUnixMs: Wall-clock ms", long: "Wall-clock timestamp (ms since epoch) used by PedDash for lag math. In SSE mode, PedDash overwrites receivedAtUnixMs to the server servedAtUnixMs for backwards compatibility. (Source: FanatecPedals / Server + PedDash / UI)" },
+  bridgeEnqueueAtUnixMs: { label: "Bridge Enq", short: "bridgeEnqueueAtUnixMs: Fallback enqueue", long: "Fallback enqueue timestamp used when enqueueAtUnixMs is missing. Derived from frame/bridge metadata to keep lag math consistent. (Source: PedDash / UI)" },
+  bridgeServedAtUnixMs: { label: "Bridge Sent", short: "bridgeServedAtUnixMs: Fallback served", long: "Fallback served/send timestamp used when sendAtUnixMs is missing. Derived from bridge servedAtUnixMs to keep lag math consistent. (Source: PedDash / UI)" },
   currentTime: { label: "TickCount", short: "currentTime: TickCount ms", long: "Environment.TickCount at capture time (ms since boot; wraps ~49 days). Used by producer logic for windows/timeouts. (Source: FanatecPedals / Producer)" },
 
   /* --- PedDash-generated algorithm scoring metrics (shown only when ENABLE_ALGO_DEBUG is checked) --- */
@@ -1377,12 +1385,25 @@ const cachedGrad = (function() {
         }
 
         const latest = frames[frames.length - 1];
+        const servedAtUnixMs = state.lastBatchMeta?.servedAtUnixMs;
+        const oldestEnqueueUnixMs = state.lastBatchMeta?.oldestEnqueueUnixMs;
+        const newestEnqueueUnixMs = state.lastBatchMeta?.newestEnqueueUnixMs;
+        const queueAgeOldestMs = (Number.isFinite(servedAtUnixMs) && Number.isFinite(oldestEnqueueUnixMs))
+          ? (servedAtUnixMs - oldestEnqueueUnixMs)
+          : NaN;
+        const queueSpanMs = (Number.isFinite(newestEnqueueUnixMs) && Number.isFinite(oldestEnqueueUnixMs))
+          ? (newestEnqueueUnixMs - oldestEnqueueUnixMs)
+          : NaN;
 
         // In SSE mode, we interpret pendingFrameCount as "how many frames were coalesced since last message"
         const coalesced = bi.pendingFrameCount ?? frames.length;
         latest.framesReceivedLastFetch = coalesced;   // powers your FRAMES RX + red warning + ffw indicator
         latest.pendingFrameCount = coalesced;         // keep existing diagnostics card meaningful
         latest.batchId = bi.batchId ?? latest.batchId;
+        latest.framesInBatch = state.lastBatchMeta?.framesInBatch ?? frames.length;
+        latest.queueAgeOldestMs = queueAgeOldestMs;
+        latest.queueSpanMs = queueSpanMs;
+        latest.lastFetchCycleMs = state.lastFetchCycleMs;
 
         const enqueueAt = Number(latest.enqueueAtUnixMs ?? latest.bridgeEnqueueAtUnixMs ?? latest.receivedAtUnixMs);
         const sendAt = Number(latest.sendAtUnixMs ?? bi.servedAtUnixMs ?? latest.bridgeServedAtUnixMs ?? latest.receivedAtUnixMs);
