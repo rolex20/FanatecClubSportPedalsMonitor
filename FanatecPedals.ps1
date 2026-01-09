@@ -1624,9 +1624,9 @@ try {
         $State.UpdatePercentages() # --- Percentages (Moved to C# for performance) ---
 
 # Check for 91
-if (Test-SampleMatch -Sample $State.gas_physical_pct -Count 3 -Repeated_Sample 91) {
-    Write-Host "Matched 3 consecutive samples of 91"
-}
+#if (Test-SampleMatch -Sample $State.gas_physical_pct -Count 3 -Repeated_Sample 91) {
+#    Write-Host "Matched 3 consecutive samples of 91"
+#}
 <#
         # --- Percentages ---
         $State.gas_physical_pct = [uint32](100 * $State.gasValue / $AxisMax)
