@@ -651,7 +651,7 @@
       { title: "Raw Inputs", keys: ['rawGas', 'gasValue', 'rawBrake', 'brakeValue', 'rawClutch', 'clutchValue', 'axisMax', 'axis_normalization_enabled', 'joy_ID', 'joy_Flags'] },
       { title: "Logic State", keys: ['isRacing', 'peakGasInWindow', 'best_estimate_percent', 'lastFullThrottleTime', 'lastGasActivityTime', 'repeatingClutchCount'] },
       { title: "Pedal Tuning", keys: ['gas_deadzone_in', 'gas_deadzone_out', 'brake_deadzone_in', 'brake_deadzone_out', 'clutch_deadzone_in', 'clutch_deadzone_out', 'gas_min_usage_percent', 'gas_window', 'gas_timeout', 'auto_gas_deadzone_enabled'] },
-      { title: "Latency (ms)", keys: ['lagTotal', 'lagE2E', 'lagPaint', 'producerLagMs', 'queueWaitMs', 'lagDash', 'jsProcessMs', 'lastFetchCycleMs', 'activeUpdateInterval', 'queueAgeOldestMs', 'queueSpanMs', 'fullLoopTime_ms', 'metricLoopProcessMs', 'metricHttpProcessMs', 'metricTtsSpeakMs'] },
+      { title: "Latency (ms)", keys: ['lagTotal', 'lagE2E', 'lagPaint', 'handlerToPaintMs', 'producerLagMs', 'queueWaitMs', 'lagDash', 'jsProcessMs', 'lastFetchCycleMs', 'activeUpdateInterval', 'queueAgeOldestMs', 'queueSpanMs', 'fullLoopTime_ms', 'metricLoopProcessMs', 'metricHttpProcessMs', 'metricTtsSpeakMs'] },
       { title: "Event Flags", keys: ['gas_alert_triggered', 'clutch_alert_triggered', 'gas_auto_adjust_applied', 'gas_estimate_decreased', 'controller_disconnected', 'controller_reconnected'] },
       { title: "Diagnostics", keys: ['pedDashGetCount', 'algoMode', 'framesReceivedLastFetch', 'framesInBatch', 'telemetry_sequence', 'telemetry_sequence_gap', 'batchId', 'deviceReadStartUnixMs', 'deviceReadDurationMs', 'sampleAtUnixMs', 'enqueueAtUnixMs', 'sendAtUnixMs', 'bridgeEnqueueAtUnixMs', 'bridgeServedAtUnixMs', 'receivedAtUnixMs', 'currentTime', 'pendingFrameCount'] }
     ];
@@ -708,6 +708,7 @@ const TELE_DEFS = {
   lagTotal: { label: "Total Latency", short: "lagTotal: Sample→JS handler ms", long: "End-to-end latency from pedal sample to this JS handler running. Uses per-frame timestamps: sampleAtUnixMs → enqueueAtUnixMs → sendAtUnixMs → Date.now(). (Source: PedDash / UI)" },
   lagE2E: { label: "E2E Latency", short: "lagE2E: sampleAt→handler ms", long: "Explicit sampleAtUnixMs → JS handler wall-clock latency (Date.now at handler entry). Independent of enqueue/send timestamps. (Source: PedDash / UI)" },
   lagPaint: { label: "Sample→Paint", short: "lagPaint: Sample→paint ms", long: "End-to-end latency from pedal sample to the first browser paint after PedDash updates. Computed via requestAnimationFrame using sampleAtUnixMs → Date.now(). (Source: PedDash / UI)" },
+  handlerToPaintMs: { label: "Handler→Paint", short: "handlerToPaintMs: Handler→paint ms", long: "Latency from the JS handler entry (Date.now at SSE onmessage start) to the next paint. Computed via requestAnimationFrame. (Source: PedDash / UI)" },
   producerLagMs: { label: "Sample→Enqueue", short: "producerLagMs: Producer path ms", long: "Elapsed ms from device sample time (sampleAtUnixMs) until the frame was enqueued for SSE (enqueueAtUnixMs). Captures pedal read + bridge logic before hitting the queue. (Source: PedDash / UI)" },
   queueWaitMs: { label: "Enqueue→Send", short: "queueWaitMs: Queue wait ms", long: "Time a frame sat in the telemetry queue before being written to the SSE stream (sendAtUnixMs − enqueueAtUnixMs). Reveals backlog/FFW impact. (Source: PedDash / UI)" },
   lagDash: { label: "Send→JS Handler", short: "lagDash: Network/buffer ms", long: "Time from when the bridge wrote the SSE event (sendAtUnixMs) until this handler started (Date.now.). Reflects transport, buffering, and JS scheduling before parsing. (Source: PedDash / UI)" },
@@ -1414,6 +1415,7 @@ const cachedGrad = (function() {
           : (bi.servedAtUnixMs ?? state.lastBatchMeta?.servedAtUnixMs ?? latest.bridgeServedAtUnixMs);
         latest.enqueueAtUnixMs = Number.isFinite(enqueueAt) ? enqueueAt : latest.enqueueAtUnixMs;
         latest.sendAtUnixMs = Number.isFinite(sendAt) ? sendAt : latest.sendAtUnixMs;
+        latest.handlerStartWallMs = handlerStartWall;
 
         state.isConnected = true;
         state.netFailStreak = 0;
@@ -1587,8 +1589,13 @@ const cachedGrad = (function() {
         requestAnimationFrame(() => {
           if (state.frame !== frameRef) return;
           const paintNow = Date.now();
+          const handlerStartWallMs = Number(frameRef.handlerStartWallMs);
+          const handlerToPaintMs = Number.isFinite(handlerStartWallMs)
+            ? Math.max(0, paintNow - handlerStartWallMs)
+            : NaN;
           const lagPaint = Math.max(0, paintNow - sampleAt);
           frameRef.lagPaint = lagPaint;
+          frameRef.handlerToPaintMs = handlerToPaintMs;
           state.target.lagPaint = lagPaint;
           state.display.lagPaint = lagPaint;
           lagHistoryEntry.paint = lagPaint;
