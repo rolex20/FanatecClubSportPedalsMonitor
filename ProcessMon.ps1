@@ -5,12 +5,13 @@ param(
   [switch] $WriteCsv,
   [switch] $WriteJson,
 
-  # Discovery can get noisy. Defaults:
-  [string[]] $ExcludeNames = @(
-    "conhost.exe","dllhost.exe","sihost.exe","RuntimeBroker.exe",
-    "SearchIndexer.exe","SearchHost.exe","backgroundTaskHost.exe",
-    "ApplicationFrameHost.exe","SystemSettings.exe"
-  ),
+  # Discovery can get noisy. These are just defaults; remove/adjust as you like.
+  [string[]] $ExcludeNames = @( "sample1.exe", "sample2.exe"),
+#    "conhost.exe","dllhost.exe","sihost.exe","RuntimeBroker.exe",
+#    "SearchIndexer.exe","SearchHost.exe","backgroundTaskHost.exe",
+#    "ApplicationFrameHost.exe","SystemSettings.exe"
+#  ),
+
 
   # Optional: ignore very short-lived processes
   [int] $MinRuntimeToSampleSec = 0
