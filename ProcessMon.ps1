@@ -6,11 +6,11 @@ param(
   [switch] $WriteJson,
 
   # Discovery can get noisy. These are just defaults; remove/adjust as you like.
-  [string[]] $ExcludeNames = @( "sample1.exe", "sample2.exe"),
-#    "conhost.exe","dllhost.exe","sihost.exe","RuntimeBroker.exe",
+  [string[]] $ExcludeNames = @( "sample1.exe", "msedge.exe",
+    "conhost.exe","dllhost.exe","sihost.exe","RuntimeBroker.exe"
 #    "SearchIndexer.exe","SearchHost.exe","backgroundTaskHost.exe",
 #    "ApplicationFrameHost.exe","SystemSettings.exe"
-#  ),
+  ),
 
 
   # Optional: ignore very short-lived processes
@@ -45,7 +45,7 @@ function global:Speak-ProcessEvent {
     [Parameter(Mandatory=$true)]
     [string] $ProcessName
   )
-
+return
   try {
     [System.Threading.Monitor]::Enter($global:TtsLock)
     try {
@@ -237,12 +237,14 @@ Register-WmiEvent -Query "SELECT * FROM Win32_ProcessStartTrace" -SourceIdentifi
     $pid   = [int]$Event.SourceEventArgs.NewEvent.ProcessID
     $start = Get-Date
 
+
     # Fix: Use $global:Config_ExcludeNames instead of $using:ExcludeNames
     if ($global:Config_ExcludeNames -contains $pname) {
       Write-Host ("[START][excluded] {0} PID={1} {2}" -f $pname, $pid, $start.ToString("HH:mm:ss.fff"))
-      Speak-ProcessEvent -EventType "Started-Excluded: " -ProcessName $pname
+      # Speak-ProcessEvent -EventType "Started-Excluded: " -ProcessName $pname
       return
     }
+	Write-Host ("[START][preliminar] {0} PID={1} {2}" -f $pname, $pid, $start.ToString("HH:mm:ss.fff"))	
 
     $parent = Get-ParentInfo -PidVal $pid
     $dispParentName = if ($parent.ParentProcessName) { $parent.ParentProcessName } else { "Unknown" }
@@ -314,18 +316,21 @@ Register-WmiEvent -Query "SELECT * FROM Win32_ProcessStartTrace" -SourceIdentifi
             $global:State[$pidLocal] = $st2
           }
         } catch {
+
           Write-Warning ("[ENABLE-SAMPLE][error] PID={0} {1}" -f $Event.MessageData, $_.Exception.Message)
         }
       } | Out-Null
       $one.Start()
     }
 
-    Speak-ProcessEvent -EventType "Started: " -ProcessName $pname
     Write-Host ("[START] {0} PID={1} {2} | Parent={3} PID={4}" -f `
       $pname, $pid, $start.ToString("HH:mm:ss.fff"),
       $dispParentName, $dispParentId)
-  } catch {
-    Write-Warning ("[START][error] {0}" -f $_.Exception.Message)
+    Speak-ProcessEvent -EventType "Started: " -ProcessName $pname	  
+  } catch {	  
+    Write-Host ("[START][error] {0}" -f $_.Exception.Message)
+
+	
   }
 } | Out-Null
 
@@ -405,14 +410,33 @@ Register-WmiEvent -Query "SELECT * FROM Win32_ProcessStopTrace" -SourceIdentifie
 
     $global:State.Remove($pid) | Out-Null
   } catch {
+# 1. Load the required .NET assembly (safe to run multiple times)
+    Add-Type -AssemblyName System.Windows.Forms
+
+    # 2. Play the standard Windows Error sound ("Hand")
+    [System.Media.SystemSounds]::Hand.Play()	  
     Write-Warning ("[STOP][error] {0}" -f $_.Exception.Message)
   }
 } | Out-Null
 
 # --- 7. MAIN LOOP ---------------------------------------------------
 try {
-  while ($true) { Wait-Event -Timeout 5 | Out-Null }
-}
+  while ($true) { 	
+  	Write-Host "<" -NoNewline
+	Wait-Event -Timeout 5
+	Write-Host ">" -NoNewline
+
+
+  }
+}  catch {
+    Write-Host ("[STOP][error] {0}" -f $_.Exception.Message)	
+# 1. Load the required .NET assembly (safe to run multiple times)
+    Add-Type -AssemblyName System.Windows.Forms
+
+    # 2. Play the standard Windows Error sound ("Hand")
+    [System.Media.SystemSounds]::Hand.Play()	  
+    Write-Host ("[STOP][error] {0}" -f $_.Exception.Message)
+  }
 finally {
   Write-Host "`nStopping discovery session..."
   foreach ($pid in @($global:State.Keys)) { Stop-Sampler -PidVal $pid }
