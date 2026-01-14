@@ -1,511 +1,488 @@
+<#
+.SYNOPSIS
+  Process monitor for "newly launched" processes. Samples CPU/mem/IO while running and reports when they stop.
+  Designed to be run elevated (Administrator) on Windows 11.
+
+.KEY FIXES
+  - Never treat AccessDenied like "process ended" (prevents empty reports for SYSTEM/protected processes).
+  - Uses Win32_PerfFormattedData_PerfProc_Process by PID (more reliable for SYSTEM processes).
+  - IO totals: prefer Win32_Process transfer counts; if blocked, integrate bytes/sec over time.
+
+.FLAGS ADDED TO REPORT
+  - Owner / OwnerSid / SessionId
+  - IsSystemAccount / IsServiceAccount / IsSession0
+  - IsWindowsPath / IsTiWorker
+  - Visibility (Full | WmiOnly | None)
+  - MetricSource (WmiPerf | None)
+  - IoTotalsSource (TransferCounts | IntegratedBps | None)
+  - AccessDeniedCount, SampleCount
+
+.USAGE
+  PowerShell (Admin):
+    .\ProcessMon.ps1
+    # Stop with Ctrl+C
+
+  Optional:
+    .\ProcessMon.ps1 -SampleIntervalMs 500 -OutputCsv "C:\temp\procmon_report.csv"
+#>
+
 [CmdletBinding()]
 param(
-  [int]    $SampleIntervalMs = 1000,
-  [string] $OutDir = "$PWD\ProcDiscoveryReports",
-  [switch] $WriteCsv,
-  [switch] $WriteJson = $true,
-
-  # Discovery can get noisy. These are just defaults; remove/adjust as you like.
-  [string[]] $ExcludeNames = @( "sample1.exe", "msedge.exe",
-    "conhost.exe","dllhost.exe","sihost.exe","RuntimeBroker.exe"
-#    "SearchIndexer.exe","SearchHost.exe","backgroundTaskHost.exe",
-#    "ApplicationFrameHost.exe","SystemSettings.exe"
-  ),
-
-
-  # Optional: ignore very short-lived processes
-  [int] $MinRuntimeToSampleSec = 0
+  [int]$SampleIntervalMs = 1000,
+  [string]$OutputCsv = "",
+  [switch]$Quiet
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# --- 1. GLOBAL CONFIGURATION MAPPING (Fix for PS 5.1 Scope Issues) ---
-# Event Actions in PS 5.1 cannot see "param" variables or use "$using:". 
-# We must copy them to the global scope.
-$global:Config_SampleIntervalMs      = $SampleIntervalMs
-$global:Config_OutDir                = $OutDir
-$global:Config_WriteCsv              = $WriteCsv
-$global:Config_WriteJson             = $WriteJson
-$global:Config_ExcludeNames          = $ExcludeNames
-$global:Config_MinRuntimeToSampleSec = $MinRuntimeToSampleSec
+# -----------------------------
+# Globals (thread-safe)
+# -----------------------------
+$global:ProcState = [hashtable]::Synchronized(@{})
+$global:Reports   = [System.Collections.ArrayList]::Synchronized((New-Object System.Collections.ArrayList))
+$global:StartTime = Get-Date
 
-# --- 2. TTS SETUP ----------------------------------------------------
-Add-Type -AssemblyName System.Speech
-$global:TtsLock = New-Object object
-$global:TtsSynth = New-Object System.Speech.Synthesis.SpeechSynthesizer
-$global:TtsSynth.SelectVoiceByHints([System.Speech.Synthesis.VoiceGender]::Female)
-$global:TtsSynth.Volume = 100
-$global:TtsSynth.Rate   = 0
-
-function Set-ThisProcessPriorityAndAffinity {
-    param(
-        [switch]$Idle,
-        [switch]$BelowNormal,
-        [string]$AffinityMask
-    )
-
-    $p = [System.Diagnostics.Process]::GetCurrentProcess()
-
-    # Priority
-    if ($Idle -and $BelowNormal) {
-        Write-Warning "Both -Idle and -BelowNormal were specified; using -Idle."
-        $BelowNormal = $false
-    }
-
-    try {
-        if ($Idle)       { $p.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Idle }
-        elseif ($BelowNormal) { $p.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal }
-    } catch {
-        Write-Warning "Failed to set process priority: $($_.Exception.Message)"
-    }
-
-    # Affinity mask (accept decimal like main.c; also accepts 0x.. if provided)
-    if ($AffinityMask) {
-        try {
-            $maskStr = $AffinityMask.Trim()
-            $mask =
-                if ($maskStr -match '^0x[0-9a-fA-F]+$') { [UInt64]::Parse($maskStr.Substring(2), [System.Globalization.NumberStyles]::HexNumber) }
-                else { [UInt64]$maskStr }
-
-            if ($mask -eq 0) { throw "AffinityMask cannot be 0." }
-
-            # ProcessorAffinity is IntPtr; keep it in-range
-            if ([IntPtr]::Size -eq 4 -and $mask -gt [UInt32]::MaxValue) {
-                throw "AffinityMask too large for 32-bit PowerShell."
-            }
-
-            $p.ProcessorAffinity = [IntPtr]([Int64]$mask)
-        } catch {
-            Write-Warning "Failed to set affinity mask '$AffinityMask': $($_.Exception.Message)"
-        }
-    }
-
-    Write-Verbose ("Proc Priority={0}, Affinity=0x{1:X}" -f $p.PriorityClass, $p.ProcessorAffinity.ToInt64())
-}
-
-
-
-function global:Speak-ProcessEvent {
-  param(
-    [Parameter(Mandatory=$true)]
-    [string] $EventType,
-    [Parameter(Mandatory=$true)]
-    [string] $ProcessName
-  )
-
+function Test-IsAdmin {
   try {
-    [System.Threading.Monitor]::Enter($global:TtsLock)
-    try {
-      [void]$global:TtsSynth.Speak("$EventType $ProcessName")
-    } finally {
-      [System.Threading.Monitor]::Exit($global:TtsLock)
-    }
-  } catch {}
-}
-
-# --- 3. HELPER FUNCTIONS ---------------------------------------------
-function global:New-DirIfMissing([string]$Path) {
-  if (-not (Test-Path -LiteralPath $Path)) {
-    New-Item -ItemType Directory -Path $Path | Out-Null
+    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $p  = New-Object Security.Principal.WindowsPrincipal($id)
+    return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+  } catch {
+    return $false
   }
 }
 
-function global:Format-Bytes([double]$bytes) {
-  $suffixes = "B","KB","MB","GB","TB"
-  $i = 0
-  while ($bytes -ge 1024 -and $i -lt $suffixes.Length-1) { $bytes /= 1024; $i++ }
-  "{0:N2} {1}" -f $bytes, $suffixes[$i]
+function Write-Info([string]$Msg) {
+  if (-not $Quiet) { Write-Host $Msg }
 }
 
-function global:Format-Bps([double]$bps) {
-  (Format-Bytes $bps) + "/s"
+function Get-TimestampString {
+  return (Get-Date).ToString("yyyyMMdd_HHmmss")
 }
 
-function global:Safe-Name([string]$s) {
-  return ($s -replace '[\\/:*?"<>|]', '_')
+function Safe-ToBool($v) { return [bool]($v -eq $true) }
+
+function Get-OwnerInfoByPid([int]$PidVal) {
+  # Returns: @{ Owner="DOMAIN\User" or ""; OwnerSid="S-..." or ""; SessionId=int or -1; Path=""; CommandLine="" }
+  $out = @{
+    Owner      = ""
+    OwnerSid   = ""
+    SessionId  = -1
+    Path       = ""
+    CommandLine= ""
+  }
+
+  try {
+    $p = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$PidVal" -ErrorAction Stop
+
+    # SessionId exists on Win32_Process
+    if ($null -ne $p.SessionId) { $out.SessionId = [int]$p.SessionId }
+
+    if ($null -ne $p.ExecutablePath) { $out.Path = [string]$p.ExecutablePath }
+    if ($null -ne $p.CommandLine)    { $out.CommandLine = [string]$p.CommandLine }
+
+    try {
+      $sidRes = Invoke-CimMethod -InputObject $p -MethodName GetOwnerSid -ErrorAction Stop
+      if ($sidRes -and $sidRes.Sid) { $out.OwnerSid = [string]$sidRes.Sid }
+    } catch { }
+
+    try {
+      $ownRes = Invoke-CimMethod -InputObject $p -MethodName GetOwner -ErrorAction Stop
+      if ($ownRes -and $ownRes.User) {
+        $dom = if ($ownRes.Domain) { $ownRes.Domain } else { "" }
+        $out.Owner = if ($dom) { "$dom\$($ownRes.User)" } else { "$($ownRes.User)" }
+      }
+    } catch { }
+  } catch {
+    # Access denied or not found: leave blanks
+  }
+
+  return $out
 }
 
-function global:Get-ParentInfo([int]$PidVal) {
-  $cim = Get-CimInstance Win32_Process -Filter "ProcessId=$PidVal" -ErrorAction SilentlyContinue
-  if (-not $cim) {
+function Get-ParentInfo([int]$ParentPid) {
+  # Best effort parent name lookup
+  try {
+    $pp = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$ParentPid" -ErrorAction Stop
+    return @{ ParentName = [string]$pp.Name }
+  } catch {
+    return @{ ParentName = "" }
+  }
+}
+
+function Test-ProcessStillRunning([int]$PidVal) {
+  # Critical: treat AccessDenied as "still running" (prevents premature cleanup)
+  try {
+    Get-Process -Id $PidVal -ErrorAction Stop | Out-Null
+    return $true
+  } catch {
+    $ex = $_.Exception
+    if ($ex -is [System.ComponentModel.Win32Exception] -and $ex.NativeErrorCode -eq 5) {
+      return $true # Access denied => process likely still there
+    }
+    return $false
+  }
+}
+
+function Get-WmiPerfSnapshot([int]$PidVal) {
+  # Returns perf snapshot by PID or $null
+  try {
+    $p = Get-CimInstance -ClassName Win32_PerfFormattedData_PerfProc_Process `
+                         -Filter "IDProcess=$PidVal" -ErrorAction Stop
+    if (-not $p) { return $null }
     return [pscustomobject]@{
-      ParentProcessId = $null
-      ParentProcessName = $null
-      ExecutablePath = $null
-      CommandLine = $null
+      CpuRawPct    = [double]$p.PercentProcessorTime
+      WorkingSet   = [double]$p.WorkingSet
+      PrivateBytes = [double]$p.PrivateBytes
+      ReadBps      = [double]$p.IOReadBytesPerSec
+      WriteBps     = [double]$p.IOWriteBytesPerSec
     }
-  }
-
-  $ppid = [int]$cim.ParentProcessId
-  $pname = $null
-  try { $pname = (Get-Process -Id $ppid -ErrorAction Stop).ProcessName + ".exe" } catch { $pname = $null }
-
-  [pscustomobject]@{
-    ParentProcessId   = $ppid
-    ParentProcessName = $pname
-    ExecutablePath    = $cim.ExecutablePath
-    CommandLine       = $cim.CommandLine
+  } catch {
+    return $null
   }
 }
 
-function global:Get-PerfInstanceNameForPid([int]$PidVal) {
+function New-ProcState([int]$PidVal, [string]$NameVal, [int]$ParentPidVal) {
+  $own = Get-OwnerInfoByPid -PidVal $PidVal
+  $pp  = Get-ParentInfo -ParentPid $ParentPidVal
+
+  $sid = $own.OwnerSid
+  $isSystem  = ($sid -eq "S-1-5-18") # LocalSystem
+  $isLocalSv = ($sid -eq "S-1-5-19") # LocalService
+  $isNetSv   = ($sid -eq "S-1-5-20") # NetworkService
+  $isService = ($isSystem -or $isLocalSv -or $isNetSv)
+
+  $path = $own.Path
+  $isWinPath = $false
+  if ($path) {
+    try {
+      $win = [IO.Path]::GetFullPath($env:WINDIR)
+      $full = [IO.Path]::GetFullPath($path)
+      $isWinPath = $full.StartsWith($win, [System.StringComparison]::OrdinalIgnoreCase)
+    } catch { $isWinPath = $false }
+  }
+
+  $isTiWorker = ($NameVal -ieq "tiworker.exe")
+
+  # State object
+  return [pscustomobject]@{
+    Pid              = $PidVal
+    Name             = $NameVal
+    ParentPid        = $ParentPidVal
+    ParentName       = $pp.ParentName
+
+    StartTime        = (Get-Date)
+    StopTime         = $null
+
+    Owner            = $own.Owner
+    OwnerSid         = $own.OwnerSid
+    SessionId        = $own.SessionId
+    Path             = $own.Path
+    CommandLine      = $own.CommandLine
+
+    IsSystemAccount  = $isSystem
+    IsServiceAccount = $isService
+    IsSession0       = ($own.SessionId -eq 0)
+    IsWindowsPath    = $isWinPath
+    IsTiWorker       = $isTiWorker
+
+    # Sampling stats
+    SampleCount      = 0
+    AccessDeniedCount= 0
+
+    WmiPerfSuccessCount = 0
+    WmiPerfFailCount    = 0
+
+    CpuAvgSum        = 0.0
+    CpuPeak          = 0.0
+    WsAvgSum         = 0.0
+    WsPeak           = 0.0
+    PvAvgSum         = 0.0
+    PvPeak           = 0.0
+    ReadBpsSum       = 0.0
+    ReadBpsPeak      = 0.0
+    WriteBpsSum      = 0.0
+    WriteBpsPeak     = 0.0
+
+    TotalReadBytes   = 0.0
+    TotalWriteBytes  = 0.0
+    LastReadBytes    = -1.0
+    LastWriteBytes   = -1.0
+
+    LastSampleTime   = (Get-Date)
+
+    # Data quality flags
+    MetricSource     = "None"   # WmiPerf | None
+    IoTotalsSource   = "None"   # TransferCounts | IntegratedBps | None
+    Visibility       = "None"   # Full | WmiOnly | None
+  }
+}
+
+function Finalize-ReportRow($st) {
+  $stop = if ($st.StopTime) { $st.StopTime } else { Get-Date }
+  $dur  = ($stop - $st.StartTime).TotalSeconds
+  if ($dur -lt 0) { $dur = 0 }
+
+  $samples = [math]::Max(1, [int]$st.SampleCount)
+
+  $cpuAvg = $st.CpuAvgSum / $samples
+  $wsAvg  = $st.WsAvgSum  / $samples
+  $pvAvg  = $st.PvAvgSum  / $samples
+  $rbAvg  = $st.ReadBpsSum / $samples
+  $wbAvg  = $st.WriteBpsSum / $samples
+
+  # Determine visibility
+  $metricSource = if ($st.WmiPerfSuccessCount -gt 0) { "WmiPerf" } else { "None" }
+  $vis = "None"
+  if ($metricSource -eq "WmiPerf") {
+    # "Full" if we also got owner/path/cmdline etc.
+    if ($st.Owner -or $st.Path -or $st.CommandLine) { $vis = "Full" } else { $vis = "WmiOnly" }
+  }
+
+  $st.MetricSource = $metricSource
+  $st.Visibility   = $vis
+
+  # Friendly sizes
+  $toMB = { param($b) if ($b -le 0) { 0 } else { [math]::Round(($b / 1MB), 2) } }
+
+  return [pscustomobject]@{
+    Pid            = $st.Pid
+    Name           = $st.Name
+    ParentPid      = $st.ParentPid
+    ParentName     = $st.ParentName
+
+    StartTime      = $st.StartTime
+    StopTime       = $stop
+    DurationSec    = [math]::Round($dur, 3)
+
+    Owner          = $st.Owner
+    OwnerSid       = $st.OwnerSid
+    SessionId      = $st.SessionId
+    Path           = $st.Path
+    CommandLine    = $st.CommandLine
+
+    # Classification flags
+    IsSystemAccount   = $st.IsSystemAccount
+    IsServiceAccount  = $st.IsServiceAccount
+    IsSession0        = $st.IsSession0
+    IsWindowsPath     = $st.IsWindowsPath
+    IsTiWorker        = $st.IsTiWorker
+
+    # Data quality flags
+    Visibility        = $st.Visibility
+    MetricSource      = $st.MetricSource
+    IoTotalsSource    = $st.IoTotalsSource
+    SampleCount       = $st.SampleCount
+    AccessDeniedCount = $st.AccessDeniedCount
+    WmiPerfSuccess    = $st.WmiPerfSuccessCount
+    WmiPerfFail       = $st.WmiPerfFailCount
+
+    # Metrics
+    CpuAvgPct      = [math]::Round($cpuAvg, 3)
+    CpuPeakPct     = [math]::Round($st.CpuPeak, 3)
+
+    WorkingSetAvgMB= & $toMB $wsAvg
+    WorkingSetPeakMB= & $toMB $st.WsPeak
+
+    PrivateBytesAvgMB= & $toMB $pvAvg
+    PrivateBytesPeakMB= & $toMB $st.PvPeak
+
+    ReadBpsAvg     = [math]::Round($rbAvg, 3)
+    ReadBpsPeak    = [math]::Round($st.ReadBpsPeak, 3)
+    WriteBpsAvg    = [math]::Round($wbAvg, 3)
+    WriteBpsPeak   = [math]::Round($st.WriteBpsPeak, 3)
+
+    TotalReadMB    = & $toMB $st.TotalReadBytes
+    TotalWriteMB   = & $toMB $st.TotalWriteBytes
+  }
+}
+
+function Stop-And-Report([int]$PidVal) {
+  if (-not $global:ProcState.ContainsKey($PidVal)) { return }
+
+  $st = $global:ProcState[$PidVal]
+  $st.StopTime = Get-Date
+  $row = Finalize-ReportRow -st $st
+
+  [void]$global:Reports.Add($row)
+  $global:ProcState.Remove($PidVal) | Out-Null
+
+  # Console output
+  Write-Info ("STOP  {0,6}  {1,-22}  Dur={2,6}s  CPUavg={3,6}%  WSpeak={4,8}MB  IO(R/W)={5,6}/{6,6}MB  Flags=[{7},{8},{9}]" -f `
+    $row.Pid, $row.Name, $row.DurationSec, $row.CpuAvgPct, $row.WorkingSetPeakMB, $row.TotalReadMB, $row.TotalWriteMB, `
+    $row.Visibility, $row.MetricSource, $row.IoTotalsSource)
+}
+
+# -----------------------------
+# Sampling Timer
+# -----------------------------
+$logical = [Environment]::ProcessorCount
+
+$timer = New-Object System.Timers.Timer
+$timer.Interval = [math]::Max(100, $SampleIntervalMs)
+$timer.AutoReset = $true
+
+$timerEvent = Register-ObjectEvent -InputObject $timer -EventName Elapsed -SourceIdentifier "ProcSampleTimer" -Action {
   try {
-    $cat = New-Object System.Diagnostics.PerformanceCounterCategory("Process")
-    foreach ($inst in $cat.GetInstanceNames()) {
-      try {
-        $pc = New-Object System.Diagnostics.PerformanceCounter("Process","ID Process",$inst,$true)
-        $val = [int]$pc.RawValue
-        $pc.Dispose()
-        if ($val -eq $PidVal) { return $inst }
-      } catch { }
+    # Snapshot keys to avoid iterator issues on synchronized hashtable
+    $pids = @($global:ProcState.Keys)
+
+    foreach ($pidLocal in $pids) {
+
+      # If not running AND we somehow missed the stop event, report it here.
+      if (-not (Test-ProcessStillRunning -PidVal $pidLocal)) {
+        Stop-And-Report -PidVal $pidLocal
+        continue
+      }
+
+      $st = $global:ProcState[$pidLocal]
+      if (-not $st) { continue }
+
+      $now = Get-Date
+      $dt = [math]::Max(0.001, ($now - $st.LastSampleTime).TotalSeconds)
+      $st.LastSampleTime = $now
+
+      $st.SampleCount++
+
+      # ---- Metrics via WMI Perf by PID ----
+      $snap = Get-WmiPerfSnapshot -PidVal $pidLocal
+      if ($snap) {
+        $st.WmiPerfSuccessCount++
+
+        # PercentProcessorTime can exceed 100 on multi-core; normalize like Task Manager "per process %"
+        $cpu = [math]::Max(0.0, ($snap.CpuRawPct / [double]$logical))
+        $ws  = [math]::Max(0.0, $snap.WorkingSet)
+        $pv  = [math]::Max(0.0, $snap.PrivateBytes)
+        $rb  = [math]::Max(0.0, $snap.ReadBps)
+        $wb  = [math]::Max(0.0, $snap.WriteBps)
+
+        $st.CpuAvgSum += $cpu; if ($cpu -gt $st.CpuPeak) { $st.CpuPeak = $cpu }
+        $st.WsAvgSum  += $ws;  if ($ws  -gt $st.WsPeak)  { $st.WsPeak  = $ws }
+        $st.PvAvgSum  += $pv;  if ($pv  -gt $st.PvPeak)  { $st.PvPeak  = $pv }
+        $st.ReadBpsSum += $rb; if ($rb -gt $st.ReadBpsPeak) { $st.ReadBpsPeak = $rb }
+        $st.WriteBpsSum += $wb; if ($wb -gt $st.WriteBpsPeak) { $st.WriteBpsPeak = $wb }
+
+        # ---- IO totals: prefer Win32_Process transfer counts; else integrate Bps ----
+        $gotTransfer = $false
+        try {
+          $cim = Get-CimInstance Win32_Process -Filter "ProcessId=$pidLocal" -ErrorAction Stop
+          if ($cim) {
+            $readBytes  = [double]$cim.ReadTransferCount
+            $writeBytes = [double]$cim.WriteTransferCount
+
+            if ($st.LastReadBytes -ge 0) {
+              $dR = $readBytes  - $st.LastReadBytes
+              $dW = $writeBytes - $st.LastWriteBytes
+              if ($dR -gt 0) { $st.TotalReadBytes  += $dR }
+              if ($dW -gt 0) { $st.TotalWriteBytes += $dW }
+            }
+            $st.LastReadBytes  = $readBytes
+            $st.LastWriteBytes = $writeBytes
+
+            $gotTransfer = $true
+            $st.IoTotalsSource = "TransferCounts"
+          }
+        } catch {
+          # If access denied, count it (but DON'T treat as exited)
+          $ex = $_.Exception
+          if ($ex -is [System.UnauthorizedAccessException] -or
+              ($ex -is [System.ComponentModel.Win32Exception] -and $ex.NativeErrorCode -eq 5)) {
+            $st.AccessDeniedCount++
+          }
+        }
+
+        if (-not $gotTransfer) {
+          # Integrate IO Bps into totals
+          if ($rb -gt 0) { $st.TotalReadBytes  += ($rb * $dt) }
+          if ($wb -gt 0) { $st.TotalWriteBytes += ($wb * $dt) }
+          if ($st.IoTotalsSource -ne "TransferCounts") { $st.IoTotalsSource = "IntegratedBps" }
+        }
+
+        # Update visibility hints
+        if ($st.MetricSource -eq "None") { $st.MetricSource = "WmiPerf" }
+
+      } else {
+        $st.WmiPerfFailCount++
+      }
+
+      $global:ProcState[$pidLocal] = $st
+    }
+  } catch {
+    # Keep sampler alive
+  }
+}
+
+# -----------------------------
+# WMI Start/Stop Event Watchers
+# -----------------------------
+$startEvent = Register-WmiEvent -Namespace "root\cimv2" -Class "Win32_ProcessStartTrace" -SourceIdentifier "ProcStart" -Action {
+  try {
+    $pid  = [int]$Event.SourceEventArgs.NewEvent.ProcessID
+    $ppid = [int]$Event.SourceEventArgs.NewEvent.ParentProcessID
+    $name = [string]$Event.SourceEventArgs.NewEvent.ProcessName
+
+    # Track only if not already tracked
+    if (-not $global:ProcState.ContainsKey($pid)) {
+      $st = New-ProcState -PidVal $pid -NameVal $name -ParentPidVal $ppid
+      $global:ProcState[$pid] = $st
+
+      Write-Info ("START {0,6}  {1,-22}  Parent={2,6}  Owner={3}  Sess={4}  Flags=[Sys={5},Svc={6},S0={7},Win={8},TiW={9}]" -f `
+        $pid, $name, $ppid, ($st.Owner ? $st.Owner : "<unknown>"), $st.SessionId, `
+        $st.IsSystemAccount, $st.IsServiceAccount, $st.IsSession0, $st.IsWindowsPath, $st.IsTiWorker)
     }
   } catch { }
-  return $null
 }
 
-function global:New-PerfCounters([string]$Instance) {
-  $counters = [ordered]@{}
-  $counters.CpuPct       = New-Object System.Diagnostics.PerformanceCounter("Process","% Processor Time",$Instance,$true)
-  $counters.WorkingSet   = New-Object System.Diagnostics.PerformanceCounter("Process","Working Set",$Instance,$true)
-  $counters.PrivateBytes = New-Object System.Diagnostics.PerformanceCounter("Process","Private Bytes",$Instance,$true)
-  $counters.IoReadBps    = New-Object System.Diagnostics.PerformanceCounter("Process","IO Read Bytes/sec",$Instance,$true)
-  $counters.IoWriteBps   = New-Object System.Diagnostics.PerformanceCounter("Process","IO Write Bytes/sec",$Instance,$true)
-  [void]$counters.CpuPct.NextValue()
-  return $counters
-}
-
-function global:Dispose-PerfCounters($counters) {
-  if (-not $counters) { return }
-  foreach ($k in $counters.Keys) {
-    try { $counters[$k].Dispose() } catch {}
-  }
-}
-
-# --- 4. STATE & STARTUP ---------------------------------------------
-$global:State = [hashtable]::Synchronized(@{})
-$global:SessionStart = Get-Date
-$global:LogicalProcessors = [int]$env:NUMBER_OF_PROCESSORS
-if (-not $global:LogicalProcessors -or $global:LogicalProcessors -lt 1) { $global:LogicalProcessors = 1 }
-
-New-DirIfMissing $global:Config_OutDir
-
-Write-Host "Discovery session start: $($global:SessionStart.ToString('yyyy-MM-dd HH:mm:ss.fff'))"
-Write-Host "Event-driven start/stop capture for ALL processes that start AFTER this moment."
-Write-Host "Sampling interval: $($global:Config_SampleIntervalMs)ms"
-Write-Host "OutDir: $($global:Config_OutDir)"
-Write-Host "Press Ctrl+C to stop and print a session summary.`n"
-
-# Timer sampling event (per PID)
-function global:Start-Sampler([int]$PidVal) {
-  $timer = New-Object System.Timers.Timer
-  $timer.Interval = $global:Config_SampleIntervalMs
-  $timer.AutoReset = $true
-  $srcId = "ProcDisc_Sample_$PidVal"
-
-  Register-ObjectEvent -InputObject $timer -EventName Elapsed -SourceIdentifier $srcId -MessageData $PidVal | Out-Null
-
-  $timer.Start()
-  return [pscustomobject]@{ Timer=$timer; EventId=$srcId }
-}
-
-function global:Stop-Sampler([int]$PidVal) {
-  $st = $global:State[$PidVal]
-  if (-not $st) { return }
-
+$stopEvent = Register-WmiEvent -Namespace "root\cimv2" -Class "Win32_ProcessStopTrace" -SourceIdentifier "ProcStop" -Action {
   try {
-    if ($st.Timer) { $st.Timer.Stop(); $st.Timer.Dispose() }
-  } catch {}
-  try {
-    if ($st.SampleEventId) { Unregister-Event -SourceIdentifier $st.SampleEventId -ErrorAction SilentlyContinue }
-  } catch {}
-  Dispose-PerfCounters $st.Perf
+    $pid = [int]$Event.SourceEventArgs.NewEvent.ProcessID
+    Stop-And-Report -PidVal $pid
+  } catch { }
 }
 
-# --- 5. START TRACE EVENT -------------------------------------------
-Register-WmiEvent -Query "SELECT * FROM Win32_ProcessStartTrace" -SourceIdentifier "ProcDisc_Start" -Action {
-  try {
-    $pname = $Event.SourceEventArgs.NewEvent.ProcessName
-    $pid   = [int]$Event.SourceEventArgs.NewEvent.ProcessID
-    $start = Get-Date
+# -----------------------------
+# Start
+# -----------------------------
+if (-not (Test-IsAdmin)) {
+  Write-Warning "Not running as Administrator. SYSTEM processes may have reduced visibility. Re-run elevated for best results."
+}
 
+if (-not $OutputCsv) {
+  $OutputCsv = Join-Path -Path $PSScriptRoot -ChildPath ("ProcessMon_Report_{0}.csv" -f (Get-TimestampString))
+}
 
-    # Fix: Use $global:Config_ExcludeNames instead of $using:ExcludeNames
-    if ($global:Config_ExcludeNames -contains $pname) {
-      Write-Host ("[START][excluded] {0} PID={1} {2}" -f $pname, $pid, $start.ToString("HH:mm:ss.fff"))
-      # Speak-ProcessEvent -EventType "Started-Excluded: " -ProcessName $pname
-      return
-    }
-	Write-Host ("[START][preliminar] {0} PID={1} {2}" -f $pname, $pid, $start.ToString("HH:mm:ss.fff"))	
+Write-Info "Monitoring NEW process starts/stops…"
+Write-Info ("SampleIntervalMs={0}  OutputCsv={1}" -f $SampleIntervalMs, $OutputCsv)
+Write-Info "Press Ctrl+C to stop."
 
-    $parent = Get-ParentInfo -PidVal $pid
-    $dispParentName = if ($parent.ParentProcessName) { $parent.ParentProcessName } else { "Unknown" }
-    $dispParentId   = if ($parent.ParentProcessId)   { $parent.ParentProcessId }   else { -1 }
-
-    $st = [pscustomobject]@{
-      ProcessName = $pname
-      Pid = $pid
-      StartTime = $start
-      EndTime = $null
-      ParentProcessId = $parent.ParentProcessId
-      ParentProcessName = $parent.ParentProcessName
-      ExecutablePath = $parent.ExecutablePath
-      CommandLine = $parent.CommandLine
-      LogicalProcessors = $global:LogicalProcessors
-      SampleCount = 0
-      CpuAvgSum = 0.0; CpuPeak = 0.0; WsAvgSum = 0.0; WsPeak = 0.0
-      PvAvgSum = 0.0; PvPeak = 0.0; ReadBpsSum = 0.0; ReadBpsPeak = 0.0
-      WriteBpsSum = 0.0; WriteBpsPeak = 0.0
-      TotalReadBytes = 0.0; TotalWriteBytes = 0.0
-      LastReadBytes = -1.0; LastWriteBytes = -1.0
-      LastSampleTime = $start
-      PerfInstance = $null; Perf = $null
-      Timer = $null; SampleEventId = $null
-      
-      # Fix: Use global config variable
-      SampleEnabledAt = $start.AddSeconds($global:Config_MinRuntimeToSampleSec)
-      SamplingEnabled = $false
-    }
-
-    $inst = Get-PerfInstanceNameForPid -PidVal $pid
-    $st.PerfInstance = $inst
-    if ($inst) {
-      try { $st.Perf = New-PerfCounters -Instance $inst } catch { $st.Perf = $null }
-    }
-
-    $cim = Get-CimInstance Win32_Process -Filter "ProcessId=$pid" -ErrorAction SilentlyContinue
-    if ($cim) {
-      $st.LastReadBytes  = [double]$cim.ReadTransferCount
-      $st.LastWriteBytes = [double]$cim.WriteTransferCount
-    }
-
-    $global:State[$pid] = $st
-
-    # Fix: Use global config variable
-    if ($global:Config_MinRuntimeToSampleSec -le 0) {
-      $sample = Start-Sampler -PidVal $pid
-      $st.Timer = $sample.Timer
-      $st.SampleEventId = $sample.EventId
-      $st.SamplingEnabled = $true
-      $global:State[$pid] = $st
-    } else {
-      $delayMs = [int]([math]::Max(0, ($st.SampleEnabledAt - (Get-Date)).TotalMilliseconds))
-      $one = New-Object System.Timers.Timer
-      $one.Interval = [math]::Max(1,$delayMs)
-      $one.AutoReset = $false
-      $oneId = "ProcDisc_EnableSample_$pid"
-      Register-ObjectEvent -InputObject $one -EventName Elapsed -SourceIdentifier $oneId -MessageData $pid -Action {
-        try {
-          $pidLocal = [int]$Event.MessageData
-          $st2 = $global:State[$pidLocal]
-          if (-not $st2) { return }
-          if (-not (Get-Process -Id $pidLocal -ErrorAction SilentlyContinue)) { return }
-          if (-not $st2.SamplingEnabled) {
-            $sample2 = Start-Sampler -PidVal $pidLocal
-            $st2.Timer = $sample2.Timer
-            $st2.SampleEventId = $sample2.EventId
-            $st2.SamplingEnabled = $true
-            $global:State[$pidLocal] = $st2
-          }
-        } catch {
-
-          Write-Warning ("[ENABLE-SAMPLE][error] PID={0} {1}" -f $Event.MessageData, $_.Exception.Message)
-        }
-      } | Out-Null
-      $one.Start()
-    }
-
-    Write-Host ("[START] {0} PID={1} {2} | Parent={3} PID={4}" -f `
-      $pname, $pid, $start.ToString("HH:mm:ss.fff"),
-      $dispParentName, $dispParentId)
-    #Speak-ProcessEvent -EventType "Started: " -ProcessName $pname	  
-  } catch {	  
-    Write-Host ("[START][error] {0}" -f $_.Exception.Message)
-
-	
-  }
-} | Out-Null
-
-# --- 6. STOP TRACE EVENT --------------------------------------------
-Register-WmiEvent -Query "SELECT * FROM Win32_ProcessStopTrace" -SourceIdentifier "ProcDisc_Stop" -Action {
-  try {
-    $pname = $Event.SourceEventArgs.NewEvent.ProcessName
-    $pid   = [int]$Event.SourceEventArgs.NewEvent.ProcessID
-    $end   = Get-Date
-
-    $st = $global:State[$pid]
-    if (-not $st) {
-      Write-Host ("[STOP][empty] {0} PID={1} {2}" -f $pname, $pid, $end.ToString("HH:mm:ss.fff"))
-      #Speak-ProcessEvent -EventType "Stopped-Untracked: " -ProcessName $pname
-      return
-    }
-
-    $st.EndTime = $end
-    Stop-Sampler -PidVal $pid
-
-    $dur = $st.EndTime - $st.StartTime
-    $secs = [double]$dur.TotalSeconds
-    if ($secs -le 0) { $secs = 0.0001 }
-    $samples = [int]$st.SampleCount
-    
-    $cpuAvg = if ($samples -gt 0) { $st.CpuAvgSum / $samples } else { 0.0 }
-    $wsAvg  = if ($samples -gt 0) { $st.WsAvgSum  / $samples } else { 0.0 }
-    $pvAvg  = if ($samples -gt 0) { $st.PvAvgSum  / $samples } else { 0.0 }
-    $readAvgBps  = if ($samples -gt 0) { $st.ReadBpsSum  / $samples } else { 0.0 }
-    $writeAvgBps = if ($samples -gt 0) { $st.WriteBpsSum / $samples } else { 0.0 }
-    $cpuTimeEstMs = ($cpuAvg / 100.0) * $secs * 1000.0 * [double]$st.LogicalProcessors
-
-    $report = [pscustomobject]@{
-      ProcessName = $st.ProcessName
-      Pid = $st.Pid
-      StartTime = $st.StartTime
-      EndTime = $st.EndTime
-      Duration = "{0:hh\:mm\:ss\.fff}" -f $dur
-      ParentProcessName = $st.ParentProcessName
-      ParentProcessId = $st.ParentProcessId
-      ExecutablePath = $st.ExecutablePath
-      CommandLine = $st.CommandLine
-      Samples = $samples
-      CpuAvgPercent = [math]::Round($cpuAvg,2)
-      CpuPeakPercent = [math]::Round($st.CpuPeak,2)
-      CpuTimeEstimated = [TimeSpan]::FromMilliseconds([math]::Max(0,[math]::Round($cpuTimeEstMs,0)))
-      WorkingSetAvg = Format-Bytes $wsAvg
-      WorkingSetPeak = Format-Bytes $st.WsPeak
-      PrivateBytesAvg = Format-Bytes $pvAvg
-      PrivateBytesPeak = Format-Bytes $st.PvPeak
-      TotalReadBytes = Format-Bytes $st.TotalReadBytes
-      TotalWriteBytes = Format-Bytes $st.TotalWriteBytes
-      ReadThroughputAvg = Format-Bps $readAvgBps
-      ReadThroughputPeak = Format-Bps $st.ReadBpsPeak
-      WriteThroughputAvg = Format-Bps $writeAvgBps
-      WriteThroughputPeak = Format-Bps $st.WriteBpsPeak
-    }
-
-    Speak-ProcessEvent -EventType "Stopped:" -ProcessName $pname
-    Write-Host ("[STOP]  {0} PID={1} {2} | Ran {3}" -f `
-      $pname, $pid, $end.ToString("HH:mm:ss.fff"), $report.Duration)
-    $report | Format-List | Out-String | Write-Host
-
-
-    # Optional exports - FIX: Use Global Config vars
-    $safe = Safe-Name $st.ProcessName
-    $stamp = $st.StartTime.ToString("yyyyMMdd_HHmmss")
-    $base = Join-Path $global:Config_OutDir "$safe`_PID$pid`_$stamp"
-
-    if ($global:Config_WriteJson) {
-      ($report | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath "$base.json" -Encoding UTF8
-      Write-Host "Wrote JSON: $base.json"
-    }
-    if ($global:Config_WriteCsv) {
-      $report | Export-Csv -LiteralPath "$base.csv" -NoTypeInformation -Encoding UTF8
-      Write-Host "Wrote CSV:  $base.csv"
-    }
-
-    $global:State.Remove($pid) | Out-Null
-  } catch {
-# 1. Load the required .NET assembly (safe to run multiple times)
-    Add-Type -AssemblyName System.Windows.Forms
-
-    # 2. Play the standard Windows Error sound ("Hand")
-    [System.Media.SystemSounds]::Hand.Play()	  
-    Write-Warning ("[STOP][error] {0}" -f $_.Exception.Message)
-  }
-} | Out-Null
-
-# --- 7. MAIN LOOP ---------------------------------------------------
-
-# PRIORITY AND AFFINITY FOR 14700K
-Set-ThisProcessPriorityAndAffinity -Idle $true -AffinityMask 268369920 
+$timer.Start()
 
 try {
-  while ($true) { 	
-    #Write-Host "<" -NoNewline
-    $event = Wait-Event -Timeout 3600
-    #Write-Host ">" -NoNewline
+  while ($true) { Start-Sleep -Seconds 1 }
+}
+finally {
+  Write-Info "Stopping…"
 
-    if ($event) {
-	  #$event
-      # Consume the event to clear queue
-      if ($event.SourceIdentifier -like "ProcDisc_Sample_*") {
-        $pidLocal = [int]$event.MessageData
-        $st = $global:State[$pidLocal]
-        if ($st) {
-          try {
-            if (-not (Get-Process -Id $pidLocal -ErrorAction SilentlyContinue)) { 
-              # Process ended; clean up
-              Stop-Sampler -PidVal $pidLocal
-              $global:State.Remove($pidLocal) | Out-Null
-              continue 
-            }
+  try { $timer.Stop() } catch {}
+  try { Unregister-Event -SourceIdentifier "ProcSampleTimer" -ErrorAction SilentlyContinue } catch {}
+  try { Unregister-Event -SourceIdentifier "ProcStart" -ErrorAction SilentlyContinue } catch {}
+  try { Unregister-Event -SourceIdentifier "ProcStop"  -ErrorAction SilentlyContinue } catch {}
+  try { Remove-Event -SourceIdentifier "ProcSampleTimer" -ErrorAction SilentlyContinue } catch {}
+  try { Remove-Event -SourceIdentifier "ProcStart" -ErrorAction SilentlyContinue } catch {}
+  try { Remove-Event -SourceIdentifier "ProcStop"  -ErrorAction SilentlyContinue } catch {}
+  try { $timer.Dispose() } catch {}
 
-            $now = Get-Date
-            $st.SampleCount++
-
-            $cpu = 0.0; $ws = 0.0; $pv = 0.0; $rb = 0.0; $wb = 0.0
-
-            if ($st.Perf) {
-              try {
-                $cpuRaw = [double]$st.Perf.CpuPct.NextValue()
-                $cpu = $cpuRaw / [double]$st.LogicalProcessors
-                if ($cpu -lt 0) { $cpu = 0 }
-                $ws = [double]$st.Perf.WorkingSet.NextValue()
-                $pv = [double]$st.Perf.PrivateBytes.NextValue()
-                $rb = [double]$st.Perf.IoReadBps.NextValue()
-                $wb = [double]$st.Perf.IoWriteBps.NextValue()
-              } catch { }
-            }
-
-            $st.CpuAvgSum += $cpu
-            if ($cpu -gt $st.CpuPeak) { $st.CpuPeak = $cpu }
-            $st.WsAvgSum += $ws
-            if ($ws -gt $st.WsPeak) { $st.WsPeak = $ws }
-            $st.PvAvgSum += $pv
-            if ($pv -gt $st.PvPeak) { $st.PvPeak = $pv }
-            $st.ReadBpsSum += $rb
-            if ($rb -gt $st.ReadBpsPeak) { $st.ReadBpsPeak = $rb }
-            $st.WriteBpsSum += $wb
-            if ($wb -gt $st.WriteBpsPeak) { $st.WriteBpsPeak = $wb }
-
-            $cim = Get-CimInstance Win32_Process -Filter "ProcessId=$pidLocal" -ErrorAction SilentlyContinue
-            if ($cim) {
-              $readBytes  = [double]$cim.ReadTransferCount
-              $writeBytes = [double]$cim.WriteTransferCount
-
-              if ($st.LastReadBytes -ge 0) {
-                $dR = $readBytes  - $st.LastReadBytes
-                $dW = $writeBytes - $st.LastWriteBytes
-                if ($dR -gt 0) { $st.TotalReadBytes  += $dR }
-                if ($dW -gt 0) { $st.TotalWriteBytes += $dW }
-              }
-              $st.LastReadBytes  = $readBytes
-              $st.LastWriteBytes = $writeBytes
-            }
-
-            $st.LastSampleTime = $now
-            $global:State[$pidLocal] = $st
-          } catch {
-            Write-Warning ("[SAMPLE][error] PID={0} {1}" -f $pidLocal, $_.Exception.Message)
-          }
-        }
-      }
-      # Remove the processed event
-      Remove-Event -EventIdentifier $event.EventIdentifier -ErrorAction SilentlyContinue
-    }
+  # Flush any remaining tracked processes (best-effort)
+  foreach ($pid in @($global:ProcState.Keys)) {
+    Stop-And-Report -PidVal $pid
   }
-} catch {
-  # 1. Load the required .NET assembly (safe to run multiple times)
-  Add-Type -AssemblyName System.Windows.Forms
 
-  # 2. Play the standard Windows Error sound ("Hand")
-  [System.Media.SystemSounds]::Hand.Play()	  
-  Write-Host ("[MAIN][error] {0}" -f $_.Exception.Message)
-} finally {
-  Write-Host "`nStopping discovery session..."
-  foreach ($pid in @($global:State.Keys)) { Stop-Sampler -PidVal $pid }
-  Unregister-Event -SourceIdentifier "ProcDisc_Start" -ErrorAction SilentlyContinue
-  Unregister-Event -SourceIdentifier "ProcDisc_Stop"  -ErrorAction SilentlyContinue
-  Get-EventSubscriber -SourceIdentifier "ProcDisc_Sample_*" | Unregister-Event -ErrorAction SilentlyContinue
-  Get-EventSubscriber -SourceIdentifier "ProcDisc_EnableSample_*" | Unregister-Event -ErrorAction SilentlyContinue
-  try { $global:TtsSynth.Dispose() } catch {}
-  Write-Host "Session ended."
+  # Export report
+  if ($global:Reports.Count -gt 0) {
+    $global:Reports | Sort-Object StartTime | Export-Csv -NoTypeInformation -Encoding UTF8 -Path $OutputCsv
+    Write-Info ("Saved report: {0} (rows: {1})" -f $OutputCsv, $global:Reports.Count)
+  } else {
+    Write-Info "No processes captured."
+  }
 }
