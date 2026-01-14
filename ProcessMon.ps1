@@ -3,7 +3,7 @@ param(
   [int]    $SampleIntervalMs = 1000,
   [string] $OutDir = "$PWD\ProcDiscoveryReports",
   [switch] $WriteCsv,
-  [switch] $WriteJson,
+  [switch] $WriteJson = $true,
 
   # Discovery can get noisy. These are just defaults; remove/adjust as you like.
   [string[]] $ExcludeNames = @( "sample1.exe", "msedge.exe",
@@ -38,6 +38,54 @@ $global:TtsSynth.SelectVoiceByHints([System.Speech.Synthesis.VoiceGender]::Femal
 $global:TtsSynth.Volume = 100
 $global:TtsSynth.Rate   = 0
 
+function Set-ThisProcessPriorityAndAffinity {
+    param(
+        [switch]$Idle,
+        [switch]$BelowNormal,
+        [string]$AffinityMask
+    )
+
+    $p = [System.Diagnostics.Process]::GetCurrentProcess()
+
+    # Priority
+    if ($Idle -and $BelowNormal) {
+        Write-Warning "Both -Idle and -BelowNormal were specified; using -Idle."
+        $BelowNormal = $false
+    }
+
+    try {
+        if ($Idle)       { $p.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Idle }
+        elseif ($BelowNormal) { $p.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal }
+    } catch {
+        Write-Warning "Failed to set process priority: $($_.Exception.Message)"
+    }
+
+    # Affinity mask (accept decimal like main.c; also accepts 0x.. if provided)
+    if ($AffinityMask) {
+        try {
+            $maskStr = $AffinityMask.Trim()
+            $mask =
+                if ($maskStr -match '^0x[0-9a-fA-F]+$') { [UInt64]::Parse($maskStr.Substring(2), [System.Globalization.NumberStyles]::HexNumber) }
+                else { [UInt64]$maskStr }
+
+            if ($mask -eq 0) { throw "AffinityMask cannot be 0." }
+
+            # ProcessorAffinity is IntPtr; keep it in-range
+            if ([IntPtr]::Size -eq 4 -and $mask -gt [UInt32]::MaxValue) {
+                throw "AffinityMask too large for 32-bit PowerShell."
+            }
+
+            $p.ProcessorAffinity = [IntPtr]([Int64]$mask)
+        } catch {
+            Write-Warning "Failed to set affinity mask '$AffinityMask': $($_.Exception.Message)"
+        }
+    }
+
+    Write-Verbose ("Proc Priority={0}, Affinity=0x{1:X}" -f $p.PriorityClass, $p.ProcessorAffinity.ToInt64())
+}
+
+
+
 function global:Speak-ProcessEvent {
   param(
     [Parameter(Mandatory=$true)]
@@ -45,7 +93,7 @@ function global:Speak-ProcessEvent {
     [Parameter(Mandatory=$true)]
     [string] $ProcessName
   )
-return
+
   try {
     [System.Threading.Monitor]::Enter($global:TtsLock)
     try {
@@ -155,63 +203,7 @@ function global:Start-Sampler([int]$PidVal) {
   $timer.AutoReset = $true
   $srcId = "ProcDisc_Sample_$PidVal"
 
-  Register-ObjectEvent -InputObject $timer -EventName Elapsed -SourceIdentifier $srcId -MessageData $PidVal -Action {
-    try {
-      $pidLocal = [int]$Event.MessageData
-      $st = $global:State[$pidLocal]
-      if (-not $st) { return }
-
-      if (-not (Get-Process -Id $pidLocal -ErrorAction SilentlyContinue)) { return }
-
-      $now = Get-Date
-      $st.SampleCount++
-
-      $cpu = 0.0; $ws = 0.0; $pv = 0.0; $rb = 0.0; $wb = 0.0
-
-      if ($st.Perf) {
-        try {
-          $cpuRaw = [double]$st.Perf.CpuPct.NextValue()
-          $cpu = $cpuRaw / [double]$st.LogicalProcessors
-          if ($cpu -lt 0) { $cpu = 0 }
-          $ws = [double]$st.Perf.WorkingSet.NextValue()
-          $pv = [double]$st.Perf.PrivateBytes.NextValue()
-          $rb = [double]$st.Perf.IoReadBps.NextValue()
-          $wb = [double]$st.Perf.IoWriteBps.NextValue()
-        } catch { }
-      }
-
-      $st.CpuAvgSum += $cpu
-      if ($cpu -gt $st.CpuPeak) { $st.CpuPeak = $cpu }
-      $st.WsAvgSum += $ws
-      if ($ws -gt $st.WsPeak) { $st.WsPeak = $ws }
-      $st.PvAvgSum += $pv
-      if ($pv -gt $st.PvPeak) { $st.PvPeak = $pv }
-      $st.ReadBpsSum += $rb
-      if ($rb -gt $st.ReadBpsPeak) { $st.ReadBpsPeak = $rb }
-      $st.WriteBpsSum += $wb
-      if ($wb -gt $st.WriteBpsPeak) { $st.WriteBpsPeak = $wb }
-
-      $cim = Get-CimInstance Win32_Process -Filter "ProcessId=$pidLocal" -ErrorAction SilentlyContinue
-      if ($cim) {
-        $readBytes  = [double]$cim.ReadTransferCount
-        $writeBytes = [double]$cim.WriteTransferCount
-
-        if ($st.LastReadBytes -ge 0) {
-          $dR = $readBytes  - $st.LastReadBytes
-          $dW = $writeBytes - $st.LastWriteBytes
-          if ($dR -gt 0) { $st.TotalReadBytes  += $dR }
-          if ($dW -gt 0) { $st.TotalWriteBytes += $dW }
-        }
-        $st.LastReadBytes  = $readBytes
-        $st.LastWriteBytes = $writeBytes
-      }
-
-      $st.LastSampleTime = $now
-      $global:State[$pidLocal] = $st
-    } catch {
-      Write-Warning ("[SAMPLE][error] PID={0} {1}" -f $Event.MessageData, $_.Exception.Message)
-    }
-  } | Out-Null
+  Register-ObjectEvent -InputObject $timer -EventName Elapsed -SourceIdentifier $srcId -MessageData $PidVal | Out-Null
 
   $timer.Start()
   return [pscustomobject]@{ Timer=$timer; EventId=$srcId }
@@ -326,7 +318,7 @@ Register-WmiEvent -Query "SELECT * FROM Win32_ProcessStartTrace" -SourceIdentifi
     Write-Host ("[START] {0} PID={1} {2} | Parent={3} PID={4}" -f `
       $pname, $pid, $start.ToString("HH:mm:ss.fff"),
       $dispParentName, $dispParentId)
-    Speak-ProcessEvent -EventType "Started: " -ProcessName $pname	  
+    #Speak-ProcessEvent -EventType "Started: " -ProcessName $pname	  
   } catch {	  
     Write-Host ("[START][error] {0}" -f $_.Exception.Message)
 
@@ -344,7 +336,7 @@ Register-WmiEvent -Query "SELECT * FROM Win32_ProcessStopTrace" -SourceIdentifie
     $st = $global:State[$pid]
     if (-not $st) {
       Write-Host ("[STOP][untracked] {0} PID={1} {2}" -f $pname, $pid, $end.ToString("HH:mm:ss.fff"))
-      Speak-ProcessEvent -EventType "Stopped-Untracked: " -ProcessName $pname
+      #Speak-ProcessEvent -EventType "Stopped-Untracked: " -ProcessName $pname
       return
     }
 
@@ -420,28 +412,99 @@ Register-WmiEvent -Query "SELECT * FROM Win32_ProcessStopTrace" -SourceIdentifie
 } | Out-Null
 
 # --- 7. MAIN LOOP ---------------------------------------------------
+
+# PRIORITY AND AFFINITY FOR 14700K
+Set-ThisProcessPriorityAndAffinity -Idle $true -AffinityMask 268369920 
+
 try {
   while ($true) { 	
-  	Write-Host "<" -NoNewline
-	Wait-Event -Timeout 5
-	Write-Host ">" -NoNewline
+    #Write-Host "<" -NoNewline
+    $event = Wait-Event -Timeout 3600
+    #Write-Host ">" -NoNewline
 
+    if ($event) {
+	  #$event
+      # Consume the event to clear queue
+      if ($event.SourceIdentifier -like "ProcDisc_Sample_*") {
+        $pidLocal = [int]$event.MessageData
+        $st = $global:State[$pidLocal]
+        if ($st) {
+          try {
+            if (-not (Get-Process -Id $pidLocal -ErrorAction SilentlyContinue)) { 
+              # Process ended; clean up
+              Stop-Sampler -PidVal $pidLocal
+              $global:State.Remove($pidLocal) | Out-Null
+              continue 
+            }
 
+            $now = Get-Date
+            $st.SampleCount++
+
+            $cpu = 0.0; $ws = 0.0; $pv = 0.0; $rb = 0.0; $wb = 0.0
+
+            if ($st.Perf) {
+              try {
+                $cpuRaw = [double]$st.Perf.CpuPct.NextValue()
+                $cpu = $cpuRaw / [double]$st.LogicalProcessors
+                if ($cpu -lt 0) { $cpu = 0 }
+                $ws = [double]$st.Perf.WorkingSet.NextValue()
+                $pv = [double]$st.Perf.PrivateBytes.NextValue()
+                $rb = [double]$st.Perf.IoReadBps.NextValue()
+                $wb = [double]$st.Perf.IoWriteBps.NextValue()
+              } catch { }
+            }
+
+            $st.CpuAvgSum += $cpu
+            if ($cpu -gt $st.CpuPeak) { $st.CpuPeak = $cpu }
+            $st.WsAvgSum += $ws
+            if ($ws -gt $st.WsPeak) { $st.WsPeak = $ws }
+            $st.PvAvgSum += $pv
+            if ($pv -gt $st.PvPeak) { $st.PvPeak = $pv }
+            $st.ReadBpsSum += $rb
+            if ($rb -gt $st.ReadBpsPeak) { $st.ReadBpsPeak = $rb }
+            $st.WriteBpsSum += $wb
+            if ($wb -gt $st.WriteBpsPeak) { $st.WriteBpsPeak = $wb }
+
+            $cim = Get-CimInstance Win32_Process -Filter "ProcessId=$pidLocal" -ErrorAction SilentlyContinue
+            if ($cim) {
+              $readBytes  = [double]$cim.ReadTransferCount
+              $writeBytes = [double]$cim.WriteTransferCount
+
+              if ($st.LastReadBytes -ge 0) {
+                $dR = $readBytes  - $st.LastReadBytes
+                $dW = $writeBytes - $st.LastWriteBytes
+                if ($dR -gt 0) { $st.TotalReadBytes  += $dR }
+                if ($dW -gt 0) { $st.TotalWriteBytes += $dW }
+              }
+              $st.LastReadBytes  = $readBytes
+              $st.LastWriteBytes = $writeBytes
+            }
+
+            $st.LastSampleTime = $now
+            $global:State[$pidLocal] = $st
+          } catch {
+            Write-Warning ("[SAMPLE][error] PID={0} {1}" -f $pidLocal, $_.Exception.Message)
+          }
+        }
+      }
+      # Remove the processed event
+      Remove-Event -EventIdentifier $event.EventIdentifier -ErrorAction SilentlyContinue
+    }
   }
-}  catch {
-    Write-Host ("[STOP][error] {0}" -f $_.Exception.Message)	
-# 1. Load the required .NET assembly (safe to run multiple times)
-    Add-Type -AssemblyName System.Windows.Forms
+} catch {
+  # 1. Load the required .NET assembly (safe to run multiple times)
+  Add-Type -AssemblyName System.Windows.Forms
 
-    # 2. Play the standard Windows Error sound ("Hand")
-    [System.Media.SystemSounds]::Hand.Play()	  
-    Write-Host ("[STOP][error] {0}" -f $_.Exception.Message)
-  }
-finally {
+  # 2. Play the standard Windows Error sound ("Hand")
+  [System.Media.SystemSounds]::Hand.Play()	  
+  Write-Host ("[MAIN][error] {0}" -f $_.Exception.Message)
+} finally {
   Write-Host "`nStopping discovery session..."
   foreach ($pid in @($global:State.Keys)) { Stop-Sampler -PidVal $pid }
   Unregister-Event -SourceIdentifier "ProcDisc_Start" -ErrorAction SilentlyContinue
   Unregister-Event -SourceIdentifier "ProcDisc_Stop"  -ErrorAction SilentlyContinue
+  Get-EventSubscriber -SourceIdentifier "ProcDisc_Sample_*" | Unregister-Event -ErrorAction SilentlyContinue
+  Get-EventSubscriber -SourceIdentifier "ProcDisc_EnableSample_*" | Unregister-Event -ErrorAction SilentlyContinue
   try { $global:TtsSynth.Dispose() } catch {}
   Write-Host "Session ended."
 }
