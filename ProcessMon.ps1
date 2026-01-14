@@ -427,9 +427,12 @@ $startEvent = Register-WmiEvent -Namespace "root\cimv2" -Class "Win32_ProcessSta
       $st = New-ProcState -PidVal $pid -NameVal $name -ParentPidVal $ppid
       $global:ProcState[$pid] = $st
 
+      $ownerDisp = if ([string]::IsNullOrWhiteSpace($st.Owner)) { "<unknown>" } else { $st.Owner }
+      
       Write-Info ("START {0,6}  {1,-22}  Parent={2,6}  Owner={3}  Sess={4}  Flags=[Sys={5},Svc={6},S0={7},Win={8},TiW={9}]" -f `
-        $pid, $name, $ppid, ($st.Owner ? $st.Owner : "<unknown>"), $st.SessionId, `
+        $pid, $name, $ppid, $ownerDisp, $st.SessionId, `
         $st.IsSystemAccount, $st.IsServiceAccount, $st.IsSession0, $st.IsWindowsPath, $st.IsTiWorker)
+
     }
   } catch { }
 }
