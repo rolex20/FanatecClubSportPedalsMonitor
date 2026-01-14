@@ -335,7 +335,7 @@ Register-WmiEvent -Query "SELECT * FROM Win32_ProcessStopTrace" -SourceIdentifie
 
     $st = $global:State[$pid]
     if (-not $st) {
-      Write-Host ("[STOP][untracked] {0} PID={1} {2}" -f $pname, $pid, $end.ToString("HH:mm:ss.fff"))
+      Write-Host ("[STOP][empty] {0} PID={1} {2}" -f $pname, $pid, $end.ToString("HH:mm:ss.fff"))
       #Speak-ProcessEvent -EventType "Stopped-Untracked: " -ProcessName $pname
       return
     }
@@ -385,6 +385,7 @@ Register-WmiEvent -Query "SELECT * FROM Win32_ProcessStopTrace" -SourceIdentifie
     Write-Host ("[STOP]  {0} PID={1} {2} | Ran {3}" -f `
       $pname, $pid, $end.ToString("HH:mm:ss.fff"), $report.Duration)
     $report | Format-List | Out-String | Write-Host
+
 
     # Optional exports - FIX: Use Global Config vars
     $safe = Safe-Name $st.ProcessName
