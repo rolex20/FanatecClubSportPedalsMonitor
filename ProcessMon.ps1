@@ -515,7 +515,7 @@ function Stop-And-Report([int]$procIdVal) {
   Write-Info ("[STOP]  {0,6}  {1,-15} StartLag={6,3}s TrackedCount={7,2} Parent={2,-15}  Ran {3,6}s Owner={4,-15} CmdLine={5,-20}" -f `
   $row.ProcId, $row.Name, $pnDisp, $row.DurationSec, $row.Owner, $ArgumentsOnly, $row.StartLagSec, $trackedCount)
 
-  $f = $row | Format-List | Out-String
+  $f = $row | Select-Object ProcId, Name, ParentProcId, ParentName, StartTime, StopTime, TimeGenerated, StartLagSec,DurationSec, Owner, OwnerSid, CommandLine, IsSystemAccount, IsServiceAccount, AccessRestricted, Visibility, MetricMode,TotalsMode, SampleCount, AccessDeniedCount,WmiPerfSuccess, WmiPerfFail, CpuPeakPct, WorkingSetPeakMB, PrivateBytesPeakMB, ReadBpsPeak, WriteBpsPeak, TotalReadMB, TotalWriteMB |Format-List | Out-String
   Write-Info $f.Trim()
   Write-Info ""
   
@@ -714,6 +714,8 @@ try {
       Stop-And-Report -procIdVal $deadPid
     }
   }
+} catch {
+	Write-Info ("[MAINLOOP][error] {0} on line number {1}" -f $_.Exception.Message, $_.InvocationInfo.ScriptLineNumber)
 }
 finally {
   Write-Info "Stopping..."
