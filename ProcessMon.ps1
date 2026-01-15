@@ -8,7 +8,7 @@
        - Win32_ProcessStartTrace -> creates per-PID state in $global:ProcState
        - Win32_ProcessStopTrace  -> finalizes report row and removes state
   2) Periodic sampler:
-       - System.Timers.Timer -> samples each tracked PID every SampleIntervalMs
+       - Dedicated STA background runspace -> samples each tracked PID every SampleIntervalMs
   3) Report builder:
        - Stop-And-Report() -> converts state to a single report row object
   4) Sinks:
@@ -140,6 +140,7 @@ function Safe-Name([string]$s) {
 $global:ProcState = [hashtable]::Synchronized(@{})
 $global:Reports   = [System.Collections.ArrayList]::Synchronized((New-Object System.Collections.ArrayList))
 $global:StartTime = Get-Date
+$global:DeadPidQueue = [System.Collections.Concurrent.ConcurrentQueue[int]]::new()
 
 $script:LogicalProcessorCount = [Environment]::ProcessorCount
 
@@ -523,15 +524,6 @@ function Stop-And-Report([int]$procIdVal) {
 }
 
 # -----------------------------
-# Sampling Timer
-# -----------------------------
-$timer = New-Object System.Timers.Timer
-$timer.Interval = [math]::Max(100, $SampleIntervalMs)
-$timer.AutoReset = $true
-
-Register-ObjectEvent -InputObject $timer -EventName Elapsed -SourceIdentifier "ProcSampleTimer" | Out-Null
-
-# -----------------------------
 # WMI Start/Stop Event Watchers
 # -----------------------------
 Register-WmiEvent -Namespace "root\cimv2" -Query "SELECT * FROM Win32_ProcessStartTrace" -SourceIdentifier "ProcStart" | Out-Null
@@ -558,7 +550,112 @@ Write-Info "Monitoring NEW process starts/stops..."
 Write-Info ("SampleIntervalMs={0}  OutputCsv={1}" -f $SampleIntervalMs, $OutputCsv)
 Write-Info "Press Ctrl+C to stop."
 
-$timer.Start()
+$effectiveIntervalMs = [math]::Max(100, $SampleIntervalMs)
+$testProcessStillRunning = ${function:Test-ProcessStillRunning}
+$getWmiPerfSnapshot = ${function:Get-WmiPerfSnapshot}
+
+$sampleRunspace = [runspacefactory]::CreateRunspace()
+$sampleRunspace.ApartmentState = "STA"
+$sampleRunspace.ThreadOptions = "ReuseThread"
+$sampleRunspace.Open()
+# PS 5.1 runspaces cannot capture $using:global:* expressions; expose shared state via SessionStateProxy.
+$sampleRunspace.SessionStateProxy.SetVariable("ProcState", $global:ProcState)
+$sampleRunspace.SessionStateProxy.SetVariable("DeadPidQueue", $global:DeadPidQueue)
+$sampleRunspace.SessionStateProxy.SetVariable("SampleIntervalMs", $effectiveIntervalMs)
+$sampleRunspace.SessionStateProxy.SetVariable("TestProcessStillRunning", $testProcessStillRunning)
+$sampleRunspace.SessionStateProxy.SetVariable("GetWmiPerfSnapshot", $getWmiPerfSnapshot)
+$sampleRunspace.SessionStateProxy.SetVariable("LogicalProcessorCount", $script:LogicalProcessorCount)
+
+$samplePowerShell = [powershell]::Create()
+$samplePowerShell.Runspace = $sampleRunspace
+[void]$samplePowerShell.AddScript({
+  while ($true) {
+    Start-Sleep -Milliseconds $SampleIntervalMs
+    $currentKeys = @($ProcState.Keys)
+    foreach ($procIdLocal in $currentKeys) {
+      $st = $ProcState[$procIdLocal]
+      if (-not $st) { continue }
+
+      if (-not (& $TestProcessStillRunning -procIdVal $procIdLocal)) {
+        $DeadPidQueue.Enqueue($procIdLocal)
+        continue
+      }
+
+      $now = Get-Date
+      $dt = [math]::Max(0.001, ($now - $st.LastSampleTime).TotalSeconds)
+      $st.LastSampleTime = $now
+
+      $st.SampleCount++
+
+      # ---- Metrics via WMI Perf by PID ----
+      $snap = (& $GetWmiPerfSnapshot -procIdVal $procIdLocal)
+      if ($snap) {
+        $st.WmiPerfSuccessCount++
+
+        # Normalize raw percent (can exceed 100 on multi-core)
+        $cpu = [math]::Max(0.0, ($snap.CpuRawPct / [double]$LogicalProcessorCount))
+        $ws  = [math]::Max(0.0, $snap.WorkingSet)
+        $pv  = [math]::Max(0.0, $snap.PrivateBytes)
+        $rb  = [math]::Max(0.0, $snap.ReadBps)
+        $wb  = [math]::Max(0.0, $snap.WriteBps)
+
+        $st.CpuAvgSum += $cpu
+        if ($cpu -gt $st.CpuPeak) { $st.CpuPeak = $cpu }
+        $st.WsAvgSum  += $ws
+        if ($ws  -gt $st.WsPeak)  { $st.WsPeak  = $ws }
+        $st.PvAvgSum  += $pv
+        if ($pv  -gt $st.PvPeak)  { $st.PvPeak  = $pv }
+        $st.ReadBpsSum += $rb
+        if ($rb -gt $st.ReadBpsPeak) { $st.ReadBpsPeak = $rb }
+        $st.WriteBpsSum += $wb
+        if ($wb -gt $st.WriteBpsPeak) { $st.WriteBpsPeak = $wb }
+
+        $st.MetricMode = "WmiPerfByPid"
+
+        # ---- IO totals: exact transfer counts if readable; else integrate Bps ----
+        $gotTransfer = $false
+        try {
+          $cim = Get-CimInstance Win32_Process -Filter "ProcessId=$procIdLocal" -ErrorAction Stop
+          if ($cim) {
+            $readBytes  = [double]$cim.ReadTransferCount
+            $writeBytes = [double]$cim.WriteTransferCount
+
+            if ($st.LastReadBytes -ge 0) {
+              $dR = $readBytes  - $st.LastReadBytes
+              $dW = $writeBytes - $st.LastWriteBytes
+              if ($dR -gt 0) { $st.TotalReadBytes  += $dR }
+              if ($dW -gt 0) { $st.TotalWriteBytes += $dW }
+            }
+            $st.LastReadBytes  = $readBytes
+            $st.LastWriteBytes = $writeBytes
+
+            $gotTransfer = $true
+            $st.TotalsMode = "TransferCounts"
+          }
+        } catch {
+          $ex = $_.Exception
+          if ($ex -is [System.UnauthorizedAccessException]) {
+            $st.AccessDeniedCount++
+          } elseif ($ex -is [System.ComponentModel.Win32Exception]) {
+            if ($ex.NativeErrorCode -eq 5) { $st.AccessDeniedCount++ }
+          }
+        }
+
+        if (-not $gotTransfer) {
+          if ($rb -gt 0) { $st.TotalReadBytes  += ($rb * $dt) }
+          if ($wb -gt 0) { $st.TotalWriteBytes += ($wb * $dt) }
+          if ($st.TotalsMode -ne "TransferCounts") { $st.TotalsMode = "IntegratedBps" }
+        }
+
+      } else {
+        $st.WmiPerfFailCount++
+      }
+
+      $ProcState[$procIdLocal] = $st
+    }
+  }
+})
+$sampleInvocation = $samplePowerShell.BeginInvoke()
 
 try {
   while ($true) { 
@@ -602,97 +699,6 @@ try {
         } elseif ($event.SourceIdentifier -eq "ProcStop") {
           $procId = [int]$event.SourceEventArgs.NewEvent.ProcessID
           Stop-And-Report -procIdVal $procId
-        } elseif ($event.SourceIdentifier -eq "ProcSampleTimer") {
-		  $timer.Stop() # --- Stop timer to prevent queuing new Elapsed events ---
-          $procIds = @($global:ProcState.Keys)
-
-
-          foreach ($procIdLocal in $procIds) {
-			  			  
-            if (-not (Test-ProcessStillRunning -procIdVal $procIdLocal)) {
-              Stop-And-Report -procIdVal $procIdLocal
-              continue
-            }
-
-            $st = $global:ProcState[$procIdLocal]
-            if (-not $st) { continue }
-
-            $now = Get-Date
-            $dt = [math]::Max(0.001, ($now - $st.LastSampleTime).TotalSeconds)
-            $st.LastSampleTime = $now
-
-            $st.SampleCount++
-
-            # ---- Metrics via WMI Perf by PID ----
-            $snap = Get-WmiPerfSnapshot -procIdVal $procIdLocal
-            if ($snap) {
-              $st.WmiPerfSuccessCount++
-
-              # Normalize raw percent (can exceed 100 on multi-core)
-              $cpu = [math]::Max(0.0, ($snap.CpuRawPct / [double]$script:LogicalProcessorCount))
-              $ws  = [math]::Max(0.0, $snap.WorkingSet)
-              $pv  = [math]::Max(0.0, $snap.PrivateBytes)
-              $rb  = [math]::Max(0.0, $snap.ReadBps)
-              $wb  = [math]::Max(0.0, $snap.WriteBps)
-
-              $st.CpuAvgSum += $cpu
-              if ($cpu -gt $st.CpuPeak) { $st.CpuPeak = $cpu }
-              $st.WsAvgSum  += $ws
-              if ($ws  -gt $st.WsPeak)  { $st.WsPeak  = $ws }
-              $st.PvAvgSum  += $pv
-              if ($pv  -gt $st.PvPeak)  { $st.PvPeak  = $pv }
-              $st.ReadBpsSum += $rb
-              if ($rb -gt $st.ReadBpsPeak) { $st.ReadBpsPeak = $rb }
-              $st.WriteBpsSum += $wb
-              if ($wb -gt $st.WriteBpsPeak) { $st.WriteBpsPeak = $wb }
-
-              $st.MetricMode = "WmiPerfByPid"
-
-              # ---- IO totals: exact transfer counts if readable; else integrate Bps ----
-              $gotTransfer = $false
-              try {
-                $cim = Get-CimInstance Win32_Process -Filter "ProcessId=$procIdLocal" -ErrorAction Stop
-                if ($cim) {
-                  $readBytes  = [double]$cim.ReadTransferCount
-                  $writeBytes = [double]$cim.WriteTransferCount
-
-                  if ($st.LastReadBytes -ge 0) {
-                    $dR = $readBytes  - $st.LastReadBytes
-                    $dW = $writeBytes - $st.LastWriteBytes
-                    if ($dR -gt 0) { $st.TotalReadBytes  += $dR }
-                    if ($dW -gt 0) { $st.TotalWriteBytes += $dW }
-                  }
-                  $st.LastReadBytes  = $readBytes
-                  $st.LastWriteBytes = $writeBytes
-
-                  $gotTransfer = $true
-                  $st.TotalsMode = "TransferCounts"
-                }
-              } catch {
-                $ex = $_.Exception
-                if ($ex -is [System.UnauthorizedAccessException]) {
-                  $st.AccessDeniedCount++
-                } elseif ($ex -is [System.ComponentModel.Win32Exception]) {
-                  if ($ex.NativeErrorCode -eq 5) { $st.AccessDeniedCount++ }
-                }
-              }
-
-              if (-not $gotTransfer) {
-                if ($rb -gt 0) { $st.TotalReadBytes  += ($rb * $dt) }
-                if ($wb -gt 0) { $st.TotalWriteBytes += ($wb * $dt) }
-                if ($st.TotalsMode -ne "TransferCounts") { $st.TotalsMode = "IntegratedBps" }
-              }
-
-            } else {
-              $st.WmiPerfFailCount++
-            }
-
-            $global:ProcState[$procIdLocal] = $st			
-          }
-		
-		# --- Restart timer now that we're done ---
-		$timer.Start()
-  
         }
       } catch {
         Write-Info ("[EVENT][error] {0} on line number {1}" -f $_.Exception.Message, $_.InvocationInfo.ScriptLineNumber)
@@ -702,20 +708,48 @@ try {
         Remove-Event -EventIdentifier $event.EventIdentifier -ErrorAction SilentlyContinue
       }
     }
+
+    $deadPid = 0
+    while ($global:DeadPidQueue.TryDequeue([ref]$deadPid)) {
+      Stop-And-Report -procIdVal $deadPid
+    }
   }
 }
 finally {
   Write-Info "Stopping..."
 
-  try { $timer.Stop() } catch {}
-  try { $timer.Dispose() } catch {}
-  Unregister-Event -SourceIdentifier "ProcSampleTimer" -ErrorAction SilentlyContinue
   Unregister-Event -SourceIdentifier "ProcStart" -ErrorAction SilentlyContinue
   Unregister-Event -SourceIdentifier "ProcStop"  -ErrorAction SilentlyContinue
-  Remove-Event -SourceIdentifier "ProcSampleTimer" -ErrorAction SilentlyContinue
   Remove-Event -SourceIdentifier "ProcStart" -ErrorAction SilentlyContinue
   Remove-Event -SourceIdentifier "ProcStop"  -ErrorAction SilentlyContinue
   try { $global:TtsSynth.Dispose() } catch {}
+
+  try {
+    if ($samplePowerShell) {
+      $samplePowerShell.Stop()
+    }
+  } catch {}
+  try {
+    if ($samplePowerShell -and $sampleInvocation) {
+      $samplePowerShell.EndInvoke($sampleInvocation)
+    }
+  } catch {}
+  try {
+    if ($samplePowerShell) {
+      $samplePowerShell.Dispose()
+    }
+  } catch {}
+  try {
+    if ($sampleRunspace) {
+      $sampleRunspace.Close()
+      $sampleRunspace.Dispose()
+    }
+  } catch {}
+
+  $deadPid = 0
+  while ($global:DeadPidQueue.TryDequeue([ref]$deadPid)) {
+    Stop-And-Report -procIdVal $deadPid
+  }
 
   foreach ($procId in @($global:ProcState.Keys)) {
     Stop-And-Report -procIdVal $procId
