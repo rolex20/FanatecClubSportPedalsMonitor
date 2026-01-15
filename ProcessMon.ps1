@@ -551,6 +551,9 @@ Write-Info ("SampleIntervalMs={0}  OutputCsv={1}" -f $SampleIntervalMs, $OutputC
 Write-Info "Press Ctrl+C to stop."
 
 $effectiveIntervalMs = [math]::Max(100, $SampleIntervalMs)
+$procStateRef = $global:ProcState
+$deadPidQueueRef = $global:DeadPidQueue
+$logicalProcessorCount = $script:LogicalProcessorCount
 $testProcessStillRunning = ${function:Test-ProcessStillRunning}
 $getWmiPerfSnapshot = ${function:Get-WmiPerfSnapshot}
 
@@ -562,15 +565,23 @@ $sampleRunspace.Open()
 $samplePowerShell = [powershell]::Create()
 $samplePowerShell.Runspace = $sampleRunspace
 [void]$samplePowerShell.AddScript({
+  param(
+    $procState,
+    $deadPidQueue,
+    $intervalMs,
+    $testProcessFn,
+    $getWmiPerfFn,
+    $logicalProcessorCount
+  )
   while ($true) {
-    Start-Sleep -Milliseconds $using:effectiveIntervalMs
-    $currentKeys = @($using:global:ProcState.Keys)
+    Start-Sleep -Milliseconds $intervalMs
+    $currentKeys = @($procState.Keys)
     foreach ($procIdLocal in $currentKeys) {
-      $st = $using:global:ProcState[$procIdLocal]
+      $st = $procState[$procIdLocal]
       if (-not $st) { continue }
 
-      if (-not (& $using:testProcessStillRunning -procIdVal $procIdLocal)) {
-        $using:global:DeadPidQueue.Enqueue($procIdLocal)
+      if (-not (& $testProcessFn -procIdVal $procIdLocal)) {
+        $deadPidQueue.Enqueue($procIdLocal)
         continue
       }
 
@@ -581,12 +592,12 @@ $samplePowerShell.Runspace = $sampleRunspace
       $st.SampleCount++
 
       # ---- Metrics via WMI Perf by PID ----
-      $snap = (& $using:getWmiPerfSnapshot -procIdVal $procIdLocal)
+      $snap = (& $getWmiPerfFn -procIdVal $procIdLocal)
       if ($snap) {
         $st.WmiPerfSuccessCount++
 
         # Normalize raw percent (can exceed 100 on multi-core)
-        $cpu = [math]::Max(0.0, ($snap.CpuRawPct / [double]$using:script:LogicalProcessorCount))
+        $cpu = [math]::Max(0.0, ($snap.CpuRawPct / [double]$logicalProcessorCount))
         $ws  = [math]::Max(0.0, $snap.WorkingSet)
         $pv  = [math]::Max(0.0, $snap.PrivateBytes)
         $rb  = [math]::Max(0.0, $snap.ReadBps)
@@ -644,10 +655,10 @@ $samplePowerShell.Runspace = $sampleRunspace
         $st.WmiPerfFailCount++
       }
 
-      $using:global:ProcState[$procIdLocal] = $st
+      $procState[$procIdLocal] = $st
     }
   }
-})
+}).AddArgument($procStateRef).AddArgument($deadPidQueueRef).AddArgument($effectiveIntervalMs).AddArgument($testProcessStillRunning).AddArgument($getWmiPerfSnapshot).AddArgument($logicalProcessorCount)
 $sampleInvocation = $samplePowerShell.BeginInvoke()
 
 try {
