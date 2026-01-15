@@ -570,6 +570,7 @@ $samplePowerShell = [powershell]::Create()
 $samplePowerShell.Runspace = $sampleRunspace
 [void]$samplePowerShell.AddScript({
   while ($true) {
+	try {
     Start-Sleep -Milliseconds $SampleIntervalMs
     $currentKeys = @($ProcState.Keys)
     foreach ($procIdLocal in $currentKeys) {
@@ -653,6 +654,9 @@ $samplePowerShell.Runspace = $sampleRunspace
 
       $ProcState[$procIdLocal] = $st
     }
+	
+	} catch { } # just continue
+	
   }
 })
 $sampleInvocation = $samplePowerShell.BeginInvoke()
@@ -715,10 +719,10 @@ try {
     }
   }
 } catch {
-	Write-Info ("[MAINLOOP][error] {0} on line number {1}" -f $_.Exception.Message, $_.InvocationInfo.ScriptLineNumber)
+	Write-Host ("[MAINLOOP][error] {0} on line number {1}" -f $_.Exception.Message, $_.InvocationInfo.ScriptLineNumber)
 }
 finally {
-  Write-Info "Stopping..."
+  Write-Host "Stopping..."
 
   Unregister-Event -SourceIdentifier "ProcStart" -ErrorAction SilentlyContinue
   Unregister-Event -SourceIdentifier "ProcStop"  -ErrorAction SilentlyContinue
@@ -759,8 +763,8 @@ finally {
 
   if ($global:Reports.Count -gt 0) {
     $global:Reports | Sort-Object StartTime | Export-Csv -NoTypeInformation -Encoding UTF8 -Path $OutputCsv
-    Write-Info ("Saved report: {0} (rows: {1})" -f $OutputCsv, $global:Reports.Count)
+    Write-Host ("Saved report: {0} (rows: {1})" -f $OutputCsv, $global:Reports.Count)
   } else {
-    Write-Info "No processes captured."
+    Write-Host "No processes captured."
   }
 }
