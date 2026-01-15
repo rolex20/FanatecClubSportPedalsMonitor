@@ -307,6 +307,7 @@ function New-ProcState([int]$procIdVal, [string]$NameVal, [int]$parentProcId) {
     StartTime         = (Get-Date)
     StopTime          = $null
 	TimeGenerated     = $null
+	StartLagSec       = $null
 
     Owner             = [string]$own.Owner
     OwnerSid          = [string]$own.OwnerSid
@@ -428,6 +429,7 @@ function Finalize-ReportRow($st) {
     StartTime         = $st.StartTime
     StopTime          = $stop
 	TimeGenerated     = $st.TimeGenerated
+	StartLagSec       = $st.StartLagSec
     DurationSec       = [math]::Round($dur, 3)
 
     Owner             = $st.Owner
@@ -508,8 +510,8 @@ function Stop-And-Report([int]$procIdVal) {
 
   # Print full details with blank lines
   Write-Info ""
-  Write-Info ("[STOP]  {0,6}  {1,-15}  Parent={2,-15}  Ran {3,6}s Owner={4,-15} CmdLine={5,-20}" -f `
-  $row.ProcId, $row.Name, $pnDisp, $row.DurationSec, $row.Owner, $ArgumentsOnly)
+  Write-Info ("[STOP]  {0,6}  {1,-15} StartLag={6,3}s Parent={2,-15}  Ran {3,6}s Owner={4,-15} CmdLine={5,-20}" -f `
+  $row.ProcId, $row.Name, $pnDisp, $row.DurationSec, $row.Owner, $ArgumentsOnly, $row.StartLagSec)
 
   $f = $row | Format-List | Out-String
   Write-Info $f.Trim()
@@ -578,6 +580,7 @@ try {
             if (-not $global:ProcState.ContainsKey($procId)) {
               $st = New-ProcState -procIdVal $procId -NameVal $name -parentProcId $parentProcId
 			  $st.TimeGenerated = $event.TimeGenerated
+			  $st.StartLagSec = [math]::Round(($st.StartTime - $st.TimeGenerated).TotalSeconds, 1)
               $global:ProcState[$procId] = $st
 
               $ownerDisp = "<unknown>"
@@ -590,8 +593,8 @@ try {
 				
 			  $ArgumentsOnly = Get-ScriptArguments -FullString $cmdDisp -FileName $name
 
-              Write-Info ("[START] {0,6}  {1,-15}  Parent={2,6}({3,-15})  Owner={4,-25}  Cmd={5}" -f `
-                $procId, $name, $parentProcId, $pnDisp, $ownerDisp, $ArgumentsOnly)
+              Write-Info ("[START] {0,6}  {1,-15} StartLag={6,3}s Parent={2,6}({3,-15})  Owner={4,-25}  Cmd={5}" -f `
+                $procId, $name, $parentProcId, $pnDisp, $ownerDisp, $ArgumentsOnly, $st.StartLagSec)
 
               Speak-ProcessEvent -EventType "Started:" -ProcessName $name
             }
@@ -600,10 +603,12 @@ try {
           $procId = [int]$event.SourceEventArgs.NewEvent.ProcessID
           Stop-And-Report -procIdVal $procId
         } elseif ($event.SourceIdentifier -eq "ProcSampleTimer") {
+		  $timer.Stop() # --- Stop timer to prevent queuing new Elapsed events ---
           $procIds = @($global:ProcState.Keys)
 
-          foreach ($procIdLocal in $procIds) {
 
+          foreach ($procIdLocal in $procIds) {
+			  			  
             if (-not (Test-ProcessStillRunning -procIdVal $procIdLocal)) {
               Stop-And-Report -procIdVal $procIdLocal
               continue
@@ -682,8 +687,12 @@ try {
               $st.WmiPerfFailCount++
             }
 
-            $global:ProcState[$procIdLocal] = $st
+            $global:ProcState[$procIdLocal] = $st			
           }
+		
+		# --- Restart timer now that we're done ---
+		$timer.Start()
+  
         }
       } catch {
         Write-Info ("[EVENT][error] {0} on line number {1}" -f $_.Exception.Message, $_.InvocationInfo.ScriptLineNumber)
