@@ -507,11 +507,12 @@ function Stop-And-Report([int]$procIdVal) {
   if (-not [string]::IsNullOrWhiteSpace($row.ParentName)) { $pnDisp = $row.ParentName }
   	
 	$ArgumentsOnly = Get-ScriptArguments -FullString $cmdDisp -FileName $row.Name
+	$trackedCount = @($global:ProcState.Keys).Count
 
   # Print full details with blank lines
   Write-Info ""
-  Write-Info ("[STOP]  {0,6}  {1,-15} StartLag={6,3}s Parent={2,-15}  Ran {3,6}s Owner={4,-15} CmdLine={5,-20}" -f `
-  $row.ProcId, $row.Name, $pnDisp, $row.DurationSec, $row.Owner, $ArgumentsOnly, $row.StartLagSec)
+  Write-Info ("[STOP]  {0,6}  {1,-15} StartLag={6,3}s TrackedCount={7,2} Parent={2,-15}  Ran {3,6}s Owner={4,-15} CmdLine={5,-20}" -f `
+  $row.ProcId, $row.Name, $pnDisp, $row.DurationSec, $row.Owner, $ArgumentsOnly, $row.StartLagSec, $trackedCount)
 
   $f = $row | Format-List | Out-String
   Write-Info $f.Trim()
@@ -589,12 +590,11 @@ try {
               $pnDisp = "<unknown>"
               if (-not [string]::IsNullOrWhiteSpace($st.ParentName)) { $pnDisp = $st.ParentName }
 
-              $cmdDisp   = Format-OneLine -Text $st.CommandLine -MaxLen 220
-				
+              $cmdDisp   = Format-OneLine -Text $st.CommandLine -MaxLen 220				
 			  $ArgumentsOnly = Get-ScriptArguments -FullString $cmdDisp -FileName $name
+			  $trackedCount = @($global:ProcState.Keys).Count
 
-              Write-Info ("[START] {0,6}  {1,-15} StartLag={6,3}s Parent={2,6}({3,-15})  Owner={4,-25}  Cmd={5}" -f `
-                $procId, $name, $parentProcId, $pnDisp, $ownerDisp, $ArgumentsOnly, $st.StartLagSec)
+              Write-Info ("[START] {0,6}  {1,-15} StartLag={6,3}s TrackedCount={7} Parent={2,6}({3,-15})  Owner={4,-25}  Cmd={5}" -f $procId, $name, $parentProcId, $pnDisp, $ownerDisp, $ArgumentsOnly, $st.StartLagSec, $trackedCount)
 
               Speak-ProcessEvent -EventType "Started:" -ProcessName $name
             }
