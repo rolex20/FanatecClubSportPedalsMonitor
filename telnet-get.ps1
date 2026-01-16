@@ -1,4 +1,6 @@
-﻿# Create a TCP client and connect to localhost:8181
+# Debugging tool to see what is being sent by the web browser
+ 
+ # Create a TCP client and connect to localhost:8181
 $client = New-Object System.Net.Sockets.TcpClient
 $client.Connect("localhost", 8181)
 
@@ -25,6 +27,7 @@ Remove-Item -path "raw_response.json"
 $response | Set-Content "raw_response.json"
 
 # OR, if you must print to console, force it to not wrap:
+
 Write-Host $response
 
 
