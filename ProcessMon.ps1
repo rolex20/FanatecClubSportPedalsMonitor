@@ -545,14 +545,33 @@ if (-not (Test-IsAdmin)) {
   Write-Warning "Not running as Administrator. SYSTEM/protected processes may have reduced visibility. Re-run elevated for best results."
 }
 
+# --- Output CSV location: ensure CSV-Reports subdirectory exists and use it by default ---
 if ([string]::IsNullOrWhiteSpace($OutputCsv)) {
-  $base = ""
-  if ($PSScriptRoot) {
-    $base = $PSScriptRoot
-  } else {
-    $base = (Get-Location).Path
+  $base = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
+  $reportsDir = Join-Path -Path $base -ChildPath "CSV-Reports"
+
+  if (-not (Test-Path -Path $reportsDir)) {
+    New-Item -Path $reportsDir -ItemType Directory -Force | Out-Null
   }
-  $OutputCsv = Join-Path -Path $base -ChildPath ("ProcessMon_Report_{0}.csv" -f (Get-TimestampString))
+
+  $OutputCsv = Join-Path -Path $reportsDir -ChildPath ("ProcessMon_Report_{0}.csv" -f (Get-TimestampString))
+} else {
+  # If user provided just a filename (no directory), place it into the script's CSV-Reports folder.
+  $providedDir = Split-Path -Path $OutputCsv -Parent
+
+  if ([string]::IsNullOrWhiteSpace($providedDir)) {
+    $base = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
+    $reportsDir = Join-Path -Path $base -ChildPath "CSV-Reports"
+    if (-not (Test-Path -Path $reportsDir)) {
+      New-Item -Path $reportsDir -ItemType Directory -Force | Out-Null
+    }
+    $OutputCsv = Join-Path -Path $reportsDir -ChildPath $OutputCsv
+  } else {
+    # If a directory was provided in OutputCsv, ensure it exists (create if missing)
+    if (-not (Test-Path -Path $providedDir)) {
+      New-Item -Path $providedDir -ItemType Directory -Force | Out-Null
+    }
+  }
 }
 
 Write-Info "Monitoring NEW process starts/stops..."
