@@ -11,38 +11,25 @@ It runs alongside heavy simulators (DCS, MSFS, etc.) with negligible CPU usage a
 
 ## Techniques & technologies used (quick list)
 
-This project showcases **low-level Windows systems programming in C**: WinMM joystick polling (`joyGetPosEx`) with optional raw mode, deterministic **state-machine signal analysis** (clutch stickiness + gas drift windows), **axis normalization** into consistent semantics (0=idle, max=fully pressed), **high-performance integer formatting** via in-place right-to-left digit writing (no `snprintf` in hot paths), robust device **disconnect/reconnect** recovery using VID/PID scanning, **single-instance enforcement** using a named mutex, **process priority + CPU affinity** tuning for “don’t disturb the sim” behavior, optional **shared-memory telemetry** (file mapping + event signaling) with Windows security descriptor handling for cross-privilege access, and optional alert delivery via either **CreateProcessA-launched PowerShell TTS** or an experimental **named-pipe IPC** “SPEAK” command path.
+This project uses **low-level Windows systems programming in C**: **single-instance enforcement** using a named mutex, **process priority + CPU affinity** tuning for “don’t disturb the sim” behavior, optional **shared-memory telemetry** (file mapping + event signaling) with Windows security descriptor handling for cross-privilege access, WinMM joystick polling (`joyGetPosEx`) with optional raw mode, deterministic **state-machine signal analysis** (clutch stickiness + gas drift windows), **axis normalization** into consistent semantics (0=idle, max=fully pressed), **high-performance integer formatting** via in-place right-to-left digit writing (no `snprintf` in hot paths), robust device **disconnect/reconnect** recovery using VID/PID scanning,  and optional alert delivery via either **CreateProcessA-launched PowerShell TTS** or an experimental **named-pipe IPC** “SPEAK” command path.
 
-It is implemented in **C (Win32 / WinMM)** , targeting Windows x64 (Win64) and **PowerShell**, and uses techniques such as:
-
-- Joystick polling via `joyGetPosEx` (WinMM).
-- Axis normalization into a user-friendly `0 .. axisMax` space.
-- State-machine–based signal analysis for clutch noise and gas drift.
-- Real-time deadzone-out estimation and optional auto-adjustment.
-- Process priority/affinity tuning to avoid impacting simulator threads.
-- A single-instance guard via a named mutex.
-- Optimized integer-to-string handling with **in-place right-to-left digit writing** (no `snprintf` in the hot path).
-- Safer TTS launching via **`CreateProcessA`** (no shell, fewer quoting/escaping hazards).
-- Optional shared-memory telemetry (file mapping + event) suitable for external dashboards/tools.
-- Defensive validation and debug-time assertions for correctness without runtime overhead.
-
-It’s a compact and “performance-minded” Windows programming to help you keep your old Fanatec hardware under control.
+It's implemented in C (Windows API / WinMM) (x64) and PowerShell with “performance-minded” Windows programming to help you keep your old Fanatec hardware under control.
 
 ---
 
 ## UI / Dashboard vs minimal console tool
 
-If you want a **GUI/dashboard**, run **`PedDash.html`** together with **`PedMon.ps1`**.
+If you want a **GUI/dashboard**, run **`PedDash.html`** together with **`FanatecPedals.ps1`**.
 
 That pairing is the recommended way to **visualize pedal travel** and quickly discover good initial **deadzone-in / deadzone-out** values for your sim racing game.
 
 If you want a **minimal, text-first program** that can run with very low overhead and simply monitor + warn you (console + optional TTS), use this C program (`fanatecmonitor.exe`) as documented here.
 
-> Note on legacy integration: earlier experiments included other bridge/dashboard plumbing. Today, the recommended GUI/dashboard path is **PedDash.html + PedMon.ps1**. This C tool is designed to be useful **standalone**.
+> Note on legacy integration: earlier experiments included other bridge/dashboard plumbing. Today, the recommended GUI/dashboard path is **PedDash.html + FanatecPedals.ps1**. This C tool is designed to be useful **standalone**.
 
 I also have the oldest/initial c program (only supported the clutch pedal for flight sims) in /original-old-c-program
 
-In the future I plan to remove some code from the current main c program and remove telemetry, ipc and other experimental features now moved to PedMon.ps1 and PedDash.html
+In the future I plan to remove some code from the current main c program and remove telemetry, ipc and other experimental features now moved to FanatecPedals.ps1 and PedDash.html
 
 ---
 
@@ -163,7 +150,7 @@ These exist mainly for curiosity/backward-compatibility and are **discouraged** 
 * `--tts` / `--no-tts`
   TTS is enabled by default and can be disabled. These knobs were most useful in legacy integration scenarios, but you can still use them with the standalone console tool.
 
-If you want a dashboard experience today, prefer **`PedDash.html` + `PedMon.ps1`**.
+If you want a dashboard experience today, prefer **`PedDash.html` + `FanatecPedals.ps1`**.
 
 ---
 
@@ -419,7 +406,7 @@ fanatecmonitor.exe ^
 
 ## Roadmap (pragmatic cleanup)
 
-* Simplify/remove legacy experimental flags (`--telemetry`, `--ipc`) as the modern dashboard experience lives in **PedDash.html + PedMon.ps1**.
+* Simplify/remove legacy experimental flags (`--telemetry`, `--ipc`) as the modern dashboard experience lives in **PedDash.html + FanatecPedals.ps1**.
 * Keep the console tool focused: minimal overhead + robust monitoring + clear alerts.
 
 ---
