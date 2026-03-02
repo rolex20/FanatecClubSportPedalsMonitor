@@ -1,23 +1,247 @@
 /*
- * Fanatec ClubSport Pedals Monitor (monitoring-only)
- *
- * Goals:
- *   - Keep clutch noise + gas drift monitoring (and optional estimator/auto-adjust).
- *   - Keep VID/PID reconnect support.
- *   - Remove all telemetry/shared-memory/dashboard machinery (--telemetry).
- *   - Remove --tts/--no-tts: program ALWAYS speaks alerts.
- *   - Keep CPU usage extremely low.
- *
- * Build (MSYS2 MINGW64):
- *   gcc -O3 -Wall -Wextra -std=c11 -o fanatecmonitor.exe main.c -lwinmm
- *   in my 14700K E-Cores:
- *   Can Compile with: gcc -O3 -march=gracemont -mtune=gracemont -Wall -Wextra -std=c11 main.c -o fanatecmonitor.exe -lwinmm
- *
- * With NetBeans IDE 18, I had to dd c:\windows\system32\winmm.dll in
- * Run->Set-Project-Configuration->Customize->Build->Linker->Libraries->Add-Library-File
- * according to the required by joyGetPosEx() en https://learn.microsoft.com/en-us/previous-versions/ms709354(v=vs.85)
- * 
- */
+================================================================================
+Deterministic Microbenchmark Mode (--bench) — User Guide (Windows / MSYS2 GCC)
+================================================================================
+
+Why this exists
+---------------
+This program is primarily a Windows monitor for Fanatec ClubSport pedals (gas/clutch
+logic, drift detection, optional estimator/auto-adjust).
+
+The --bench mode turns it into a deterministic microbenchmark so you can compare
+different compiler optimization flags (e.g., -O3 vs -O2 vs -Os, with/without
+-march/-mtune) on the *same* machine in a repeatable way.
+
+Key goals:
+  - No joystick I/O (no joyGetPosEx in bench).
+  - Deterministic synthetic inputs so every run does the same work.
+  - High-resolution measurement with multiple clocks:
+      * Thread cycles (QueryThreadCycleTime) — best signal for “compiler efficiency”
+      * Thread CPU time (GetThreadTimes) — time-in-ns the thread actually ran
+      * QPC wall time (QueryPerformanceCounter) — active wall time excluding Sleep
+  - Alerts are “cheap” in bench mode (only counted, not spoken/printed/spawned).
+
+Quick start (recommended commands)
+----------------------------------
+A good baseline run (exercise the actual monitoring logic, minimize noise):
+  fanatecmonitor.exe --bench --monitor-gas --monitor-clutch --sleep 1 --affinitymask 0x4000000
+
+Notes:
+  - --sleep 0 yields; --sleep 1 gives the scheduler a tiny break. Try both.
+  - Pin to a single E-core using --affinitymask (example above is just a mask sample;
+    pick the correct bit for your target core).
+  - Use Windows “Ultra / High Performance” power plan and keep background load stable.
+
+If you want less console spam, increase report interval:
+  fanatecmonitor.exe --bench --monitor-gas --monitor-clutch --sleep 1 --bench-report-every 10000
+
+If you want longer runs (more stable medians), increase iters:
+  fanatecmonitor.exe --bench --monitor-gas --monitor-clutch --sleep 1 --bench-iters 5000000
+
+Benchmark configuration knobs
+-----------------------------
+--bench
+  Enables benchmark mode. Joystick selection is not required.
+
+--bench-warmup N   (default 200000)
+  Warmup iterations (no reporting). Stabilizes caches / branch predictors / frequency.
+
+--bench-iters N    (default 1000000)
+  Measured iterations.
+
+--bench-dt-ms MS   (default 1)
+  Virtual time step in milliseconds fed into the monitoring logic. This keeps timing-
+  based detector logic deterministic without calling GetTickCount() each iteration.
+
+--bench-report-every N (default 1000)
+  Print a report every N measured iterations. The last partial block prints too.
+
+--sleep MS
+  Bench still calls Sleep(MS) each iteration so you can test yield behavior:
+    Sleep(0)  => yield
+    Sleep(1)  => minimum sleep quantum (depends on timer resolution)
+  IMPORTANT: Sleep time is *excluded* from the wall-time metric described below.
+
+How the benchmark workload is generated
+---------------------------------------
+Each iteration generates deterministic gas/clutch values:
+  - A fixed-seed LCG RNG + a phase pattern that forces the state machine through
+    useful “scenarios” (idle-ish, racing-ish, full throttle bursts, etc.).
+This ensures each run exercises the same code paths in a repeatable pattern.
+
+Bench mode still calls:
+  handle_clutch(...)
+  handle_gas(...)
+so you should pass:
+  --monitor-clutch --monitor-gas
+if you want to benchmark the real detector logic rather than just the harness.
+
+How timing is measured (three clocks)
+-------------------------------------
+
+1) cycles/iter  (QueryThreadCycleTime)
+   - What it is:
+       CPU cycles consumed by THIS THREAD during the measured work.
+   - Why it’s useful:
+       Usually the best “compiler optimization” signal (less affected by preemption
+       and wall-clock jitter).
+   - Source:
+       QueryThreadCycleTime(GetCurrentThread(), &cycles)
+   - Computation:
+       block_cycles/iter = delta_cycles_in_block / iterations_in_block
+       cumulative cycles/iter uses sum of block deltas / measured_done
+   - Notes:
+       This measures “how much CPU work” in cycles the thread used.
+
+2) cpu_ns/iter  (GetThreadTimes)
+   - What it is:
+       CPU time actually consumed by THIS THREAD (kernel+user), expressed in ns.
+       This excludes time when your thread wasn’t scheduled.
+   - Source:
+       GetThreadTimes(GetCurrentThread(), ..., &kernel, &user)
+       FILETIME units are 100ns => ns = cpu100ns * 100
+   - Computation:
+       block_cpu_ns/iter = (delta_cpu_100ns * 100) / iters_in_block
+       cumulative cpu_ns/iter uses sum of block deltas / measured_done
+   - Notes:
+       This is sensitive to CPU frequency changes (turbo / power management).
+
+3) wall_us/iter  (QPC active wall time)
+   - What it is:
+       High-resolution wall time of ONLY the “active work” section.
+       It intentionally excludes:
+         - Sleep time
+         - report printing time
+   - Source:
+       QueryPerformanceCounter / QueryPerformanceFrequency
+   - IMPORTANT timing semantics:
+       The QPC timer is “pausable”.
+       Each iteration:
+         - Timer is RUNNING during the active work region
+         - Timer PAUSES before Sleep
+         - Sleep happens while paused
+         - Report printing happens while paused
+         - Timer RESUMES after Sleep
+   - Computation:
+       block_wall_us/iter = (block_ticks * 1e6 / freq) / iters_in_block
+       cumulative wall_us/iter = (total_ticks * 1e6 / freq) / measured_done
+   - Notes:
+       This can still reflect preemption/interrupts that happen DURING the active work,
+       because wall time can’t distinguish “running” vs “ready-but-not-scheduled”.
+       That’s why cycles/iter and cpu_ns/iter also exist.
+
+Derived metric: eff_GHz
+-----------------------
+eff_GHz is an estimate of the effective CPU frequency while running this thread:
+
+  eff_GHz ≈ (delta_cycles) / (delta_cpu_seconds) / 1e9
+
+We compute it from cycles + thread CPU time:
+  cpu_seconds = cpu_100ns * 1e-7
+  eff_GHz = cycles / cpu_seconds / 1e9
+  (implemented as cycles / (cpu_100ns * 100.0))
+
+Interpretation:
+  - It is NOT a “performance score”.
+  - It’s a diagnostic to see if frequency is stable across runs/blocks.
+  - If eff_GHz varies a lot, cpu_ns/iter will vary too; cycles/iter is usually more stable.
+
+Report output: block vs cumulative
+----------------------------------
+
+Every report prints two lines:
+
+[Bench] iter=...  block: ... best: ... alerts=... checksum=...
+        cumulative: ...
+
+BLOCK line (rolling window of the last report interval):
+  cycles/iter      Average thread cycles per iteration in this block
+  cpu_ns/iter      Average thread CPU nanoseconds per iteration in this block
+  wall_us/iter     Average active wall microseconds per iteration in this block
+  eff_GHz          Effective GHz estimate for this block (diagnostic)
+  best:            “best so far” tracking (see below)
+  alerts           Count of alerts triggered during this block (alerts are suppressed in bench)
+  checksum         Rolling checksum to prevent the compiler optimizing away the workload
+
+BEST fields (best-so-far):
+  min_block_cycles   Minimum observed block-average cycles/iter so far
+  min_block_cpu_ns   Minimum observed block-average cpu_ns/iter so far
+  min_block_wall_us  Minimum observed block-average wall_us/iter so far
+  min_iter_wall_us   Minimum observed SINGLE-iteration wall time so far (QPC active delta)
+  Notes:
+    - min_iter_wall_us is a “best-case hint” (least interference moment).
+    - min_block_* is a better “best sustained performance” indicator than a single min.
+
+CUMULATIVE line (from the start of measured phase):
+  cycles/iter      Computed from sum of clean block deltas / total measured iterations
+  cpu_ns/iter      Same (sum of block cpu deltas / total measured iterations)
+  wall_us/iter     QPC total active ticks / total measured iterations
+  eff_GHz          Computed from cumulative cycles + cumulative cpu time
+  alerts           Total alerts so far
+  checksum         Current checksum
+
+IMPORTANT:
+  - Cumulative cycles/iter and cpu_ns/iter are derived from summed block deltas,
+    so report printing overhead does not contaminate them.
+
+Final summary footer ([BenchSummary])
+-------------------------------------
+At the end of the run, the program prints summary stats:
+
+[BenchSummary] iters=... blocks=... sleep_ms=... dt_ms=... report_every=...
+
+Then per metric:
+  mean     = cumulative average over the entire measured run
+  median   = median of the *block averages* (Option A; robust vs outliers)
+  min_block= best sustained block average seen
+
+Plus:
+  wall_us/iter includes min_iter_wall_us
+  alerts / checksum / sink (sink is volatile to defeat dead-code elimination)
+
+How to choose the “best” compiler flags
+---------------------------------------
+Recommended selection order:
+1) Primary winner metric: median cycles/iter
+   - Usually the cleanest signal for compiler/flags differences.
+
+2) Secondary: median wall_us/iter (active wall time)
+   - Useful sanity check; can show scheduler noise. Expect more jitter than cycles.
+
+3) cpu_ns/iter depends on frequency stability:
+   - If eff_GHz is stable across runs, cpu_ns/iter can also be a good “real time” metric.
+   - If eff_GHz varies, prefer cycles/iter.
+
+Use “min_*” carefully:
+  - min_iter_wall_us is a best-case hint, not the final truth.
+  - min_block_* is more meaningful than a single-iteration minimum.
+
+Practical run discipline (for enthusiasts)
+------------------------------------------
+To make comparisons fair:
+  - Use the same OS power plan for all runs (High/Ultra performance).
+  - Keep background load stable (close browsers, updates, RGB tools, etc).
+  - Pin to one core (affinity mask) so you don’t hop across cores.
+  - Run each build 3–5 times and compare medians (not just one run).
+  - Keep --sleep consistent across builds when comparing (-O3 vs -O2 etc).
+  - If you change --sleep, you’re testing a different scheduler/yield behavior.
+
+Understanding your GCC flag matrix
+----------------------------------
+You can compile multiple binaries (or one binary at a time) using combinations like:
+  -O3 -march=gracemont -mtune=gracemont
+  -O2 -march=gracemont -mtune=gracemont
+  -Os -march=gracemont -mtune=gracemont
+  -O2
+  -Os
+
+For each binary:
+  - Run the same benchmark command line (same iters, report_every, sleep, dt).
+  - Record median cycles/iter and median wall_us/iter.
+  - Choose the lowest median cycles/iter as the primary “best optimization” result.
+
+================================================================================
+*/
 
 #include <stdio.h>
 #include <stdlib.h>
