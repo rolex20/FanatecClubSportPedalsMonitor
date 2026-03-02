@@ -1,0 +1,1300 @@
+/*
+ * Fanatec ClubSport Pedals Monitor (monitoring-only)
+ *
+ * Goals:
+ *   - Keep clutch noise + gas drift monitoring (and optional estimator/auto-adjust).
+ *   - Keep VID/PID reconnect support.
+ *   - Remove all telemetry/shared-memory/dashboard machinery (--telemetry).
+ *   - Remove --tts/--no-tts: program ALWAYS speaks alerts.
+ *   - Keep CPU usage extremely low.
+ *
+ * Build (MSYS2 MINGW64):
+ *   gcc -O3 -Wall -Wextra -std=c11 -o fanatecmonitor.exe main.c -lwinmm
+ *   in my 14700K E-Cores:
+ *   I Compile with: gcc -O3 -march=gracemont -mtune=gracemont -Wall -Wextra -std=c11 main.c -o fanatecmonitor.exe -lwinmm
+ *
+ * With NetBeans IDE 18, I had to dd c:\windows\system32\winmm.dll in
+ * Run->Set-Project-Configuration->Customize->Build->Linker->Libraries->Add-Library-File
+ * according to the required by joyGetPosEx() en https://learn.microsoft.com/en-us/previous-versions/ms709354(v=vs.85)
+ * 
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <inttypes.h>
+
+#include <windows.h>
+#include <mmsystem.h>
+#include <getopt.h>
+
+#include <assert.h>
+
+#ifndef JOY_RETURNRAWDATA
+#define JOY_RETURNRAWDATA 256
+#endif
+
+/* ------------------------------------------------------------------------- */
+/* Options and runtime state */
+
+typedef struct Options {
+    /* Logging */
+    int verbose;
+    int debug_raw;
+    int no_console_banner;
+
+    /* Features */
+    int monitor_clutch;
+    int monitor_gas;
+
+    /* Axis semantics */
+    int axis_normalization_enabled;
+
+    /* Device selection */
+    UINT  joy_id;                /* 17 means “unset” sentinel (historical behavior) */
+    DWORD joy_flags;             /* JOYINFOEX.dwFlags */
+
+    int   target_vendor_id;      /* optional VID/PID for auto-reconnect */
+    int   target_product_id;
+
+    /* Loop control */
+    unsigned iterations;         /* 0 => infinite */
+    unsigned sleep_ms;           /* must be > 0 */
+
+    /* Deterministic microbenchmark mode */
+    int      bench_mode;
+    uint64_t bench_iters;
+    uint64_t bench_warmup;
+    unsigned bench_dt_ms;
+    uint64_t bench_report_every;
+
+    /* Clutch tuning */
+    unsigned margin_percent;     /* 0..100 */
+    int      clutch_repeat_required;
+
+    /* Gas tuning */
+    int gas_deadzone_in;         /* 0..100 */
+    int gas_deadzone_out;        /* 0..100 initial */
+    int gas_window_sec;          /* > 0 */
+    int gas_timeout_sec;         /* > 0 */
+    int gas_cooldown_sec;        /* > 0 */
+    int gas_min_usage_percent;   /* 0..100 */
+
+    /* Estimator / auto-adjust */
+    int estimate_gas_deadzone_enabled;
+    int auto_gas_deadzone_enabled;
+    int auto_gas_deadzone_minimum;
+
+    /* TTS delivery: TTS is always enabled; this chooses how */
+    int ipc_enabled;             /* 0 => spawn PowerShell, 1 => SPEAK over pipe */
+
+    /* Process tuning (applied after parse) */
+    int set_idle_priority;
+    int set_below_normal_priority;
+    int set_affinity;
+    DWORD_PTR affinity_mask;
+} Options;
+
+typedef struct Runtime {
+    /* Axis scaling */
+    DWORD axis_max;              /* 1023 in raw mode; else 65535 */
+    DWORD axis_margin;           /* axis_max * margin% / 100 */
+
+    /* Gas thresholds in normalized space */
+    DWORD gas_idle_max;          /* axis_max * gas_deadzone_in / 100 */
+    DWORD gas_full_min;          /* axis_max * gas_deadzone_out_current / 100 */
+
+    DWORD gas_timeout_ms;
+    DWORD gas_window_ms;
+    DWORD gas_cooldown_ms;
+
+    int gas_deadzone_out_current;
+
+    /* Clutch detector */
+    DWORD last_clutch;
+    int   clutch_repeat_count;
+
+    /* Gas drift detector */
+    BOOL  is_racing;
+    DWORD peak_gas_in_window;
+    DWORD last_full_throttle_ms;
+    DWORD last_gas_activity_ms;
+    DWORD last_gas_alert_ms;
+
+    /* Estimator */
+    unsigned best_estimate_percent;
+    unsigned last_printed_estimate;
+    unsigned estimate_window_peak_percent;
+    DWORD    estimate_window_start_ms;
+    DWORD    last_estimate_print_ms;
+} Runtime;
+
+/* ------------------------------------------------------------------------- */
+/* Forward declarations (keeps the file “literate”: story first, detail later) */
+
+static void options_set_defaults(Options *opt);
+
+static void show_help_and_exit(void);
+static void parse_args(int argc, char **argv, Options *opt);
+
+static int  acquire_single_instance(const Options *opt, const char *name, HANDLE *out_mutex);
+static void cleanup_single_instance(HANDLE hMutex);
+
+static void apply_process_tuning(const Options *opt);
+
+static int  select_joystick(Options *opt);
+static int  init_monitor(const Options *opt, Runtime *rt, JOYINFOEX *info);
+
+static void run_loop(Options *opt, Runtime *rt, JOYINFOEX *info);
+static void run_bench_loop(Options *opt);
+
+/* Monitoring helpers */
+static void handle_clutch(const Options *opt, Runtime *rt, DWORD gas, DWORD clutch);
+static void handle_gas(const Options *opt, Runtime *rt, DWORD now, DWORD gas);
+static void handle_gas_estimator(const Options *opt, Runtime *rt, DWORD now, DWORD gas);
+
+/* Device discovery */
+static int  find_joystick(int targetVid, int targetPid);
+
+/* Formatting helper (no snprintf) */
+static char *append_digits_from_right(uint32_t value, char special_char,
+                                      char *last_valid, size_t total_buf_size);
+
+/* Axis normalization */
+static inline DWORD normalize_pedal_axis(int enabled, DWORD raw, DWORD axis_max);
+
+/* Runtime init */
+static void runtime_recompute_thresholds(const Options *opt, Runtime *rt);
+static void runtime_reset_detectors(const Options *opt, Runtime *rt);
+
+/* Alerting (TTS always enabled) */
+static void alert_msg(const Options *opt, const char *text, size_t text_len, int log_to_console);
+static void speak_ipc(const char *text, size_t text_len);
+static void speak_external(const char *text, size_t text_len);
+
+static volatile uint64_t g_bench_alert_counter = 0;
+static volatile uint64_t g_bench_sink = 0;
+
+#define ALERT_LIT(opt, s) alert_msg((opt), (s), sizeof(s) - 1, 1)
+#define ALERT_BUF(opt, s) alert_msg((opt), (s), strlen(s), 1)
+
+/* ------------------------------------------------------------------------- */
+/* Main “story” */
+
+int
+main(int argc, char **argv)
+{
+    Options opt;
+    Runtime rt;
+    JOYINFOEX info;
+    HANDLE hMutex = NULL;
+
+    options_set_defaults(&opt);
+
+    parse_args(argc, argv, &opt);
+
+    if (opt.bench_mode) {
+        apply_process_tuning(&opt);
+        run_bench_loop(&opt);
+        return EXIT_SUCCESS;
+    }
+
+    if (!acquire_single_instance(&opt, "fanatec_monitor_single_instance_mutex", &hMutex))
+        return EXIT_FAILURE;
+
+    apply_process_tuning(&opt);
+
+    if (!select_joystick(&opt)) {
+        cleanup_single_instance(hMutex);
+        return EXIT_FAILURE;
+    }
+
+    if (!init_monitor(&opt, &rt, &info)) {
+        cleanup_single_instance(hMutex);
+        return EXIT_FAILURE;
+    }
+
+    run_loop(&opt, &rt, &info);
+
+    cleanup_single_instance(hMutex);
+    return EXIT_SUCCESS;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Defaults */
+
+static void
+options_set_defaults(Options *opt)
+{
+    memset(opt, 0, sizeof(*opt));
+
+    opt->verbose = 0;
+    opt->debug_raw = 0;
+    opt->no_console_banner = 0;
+
+    opt->monitor_clutch = 0;
+    opt->monitor_gas = 0;
+
+    opt->axis_normalization_enabled = 1;
+
+    opt->joy_id = 17;                 /* unset sentinel */
+    opt->joy_flags = JOY_RETURNALL;
+
+    opt->iterations = 1;              /* 0 => infinite */
+    opt->sleep_ms = 1000;
+
+    opt->bench_mode = 0;
+    opt->bench_iters = 1000000u;
+    opt->bench_warmup = 200000u;
+    opt->bench_dt_ms = 1u;
+    opt->bench_report_every = 1000u;
+
+    opt->margin_percent = 5;
+    opt->clutch_repeat_required = 4;
+
+    opt->gas_deadzone_in = 5;
+    opt->gas_deadzone_out = 93;
+    opt->gas_window_sec = 30;
+    opt->gas_timeout_sec = 10;
+    opt->gas_cooldown_sec = 60;
+    opt->gas_min_usage_percent = 20;
+
+    opt->estimate_gas_deadzone_enabled = 0;
+    opt->auto_gas_deadzone_enabled = 0;
+    opt->auto_gas_deadzone_minimum = 0;
+
+    opt->ipc_enabled = 0;
+
+    opt->set_idle_priority = 0;
+    opt->set_below_normal_priority = 0;
+    opt->set_affinity = 0;
+    opt->affinity_mask = 0;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Help + CLI parsing */
+
+static void
+show_help_and_exit(void)
+{
+    puts("Usage: fanatecmonitor.exe [--monitor-clutch] [--monitor-gas] [options]\n");
+    puts("  Removed: --telemetry, --tts, --no-tts (TTS is always enabled)\n");
+
+    puts("  Controller selection:");
+    puts("    --joystick ID           Joystick ID (0-15).");
+    puts("    --vendor-id HEX         VID for auto-reconnect.");
+    puts("    --product-id HEX        PID for auto-reconnect.\n");
+
+    puts("  Monitoring:");
+    puts("    --monitor-clutch        Enable clutch noise monitoring.");
+    puts("    --monitor-gas           Enable gas drift monitoring.\n");
+
+    puts("  TTS delivery:");
+    puts("    --ipc                   Use IPC SPEAK pipe instead of spawning PowerShell.\n");
+
+    puts("  General:");
+    puts("    --verbose / --brief     Verbose logging on/off.");
+    puts("    --sleep MS              Poll interval in ms (default 1000; must be > 0 in normal mode).\n");
+    puts("  Deterministic benchmark mode:");
+    puts("    --bench                 Enable microbenchmark mode (no joystick I/O).\n"
+         "    --bench-iters N         Measured iterations, default 1000000.\n"
+         "    --bench-warmup N        Warmup iterations, default 200000.\n"
+         "    --bench-dt-ms MS        Virtual dt for monitor logic, default 1.\n"
+         "    --bench-report-every N  Print report every N measured iterations, default 1000.");
+    puts("    --iterations N          0 => infinite.");
+    puts("    --flags N               JOYINFOEX flags; default JOY_RETURNALL.");
+    puts("    --no-axis-normalization Use raw axis direction (no inversion).");
+    puts("    --debug-raw             In verbose mode, print raw + normalized values.");
+    puts("    --no-console-banner     Suppress startup/status banners.\n");
+
+    puts("  Priority/Affinity:");
+    puts("    --idle                  Set IDLE priority.");
+    puts("    --belownormal           Set BELOW_NORMAL priority.");
+    puts("    --affinitymask N        Decimal or 0x... CPU affinity mask.\n");
+
+    puts("  Clutch tuning:");
+    puts("    --margin N              0..100 percent, default 5.");
+    puts("    --clutch-repeat N       default 4.\n");
+
+    puts("  Gas tuning:");
+    puts("    --gas-deadzone-in N     default 5.");
+    puts("    --gas-deadzone-out N    default 93.");
+    puts("    --gas-window N          seconds, default 30.");
+    puts("    --gas-timeout N         seconds, default 10.");
+    puts("    --gas-cooldown N        seconds, default 60.");
+    puts("    --gas-min-usage N       percent, default 20.");
+    puts("    --estimate-gas-deadzone-out");
+    puts("    --adjust-deadzone-out-with-minimum N\n");
+
+    exit(EXIT_SUCCESS);
+}
+
+static void
+parse_args(int argc, char **argv, Options *opt)
+{
+    int c;
+    int joy_id_set = 0;
+    enum {
+        OPT_BENCH = 1000,
+        OPT_BENCH_ITERS,
+        OPT_BENCH_WARMUP,
+        OPT_BENCH_DT_MS,
+        OPT_BENCH_REPORT_EVERY
+    };
+
+    while (1) {
+        struct option long_options[] = {
+            {"verbose",                   no_argument,       &opt->verbose, 1},
+            {"brief",                     no_argument,       &opt->verbose, 0},
+            {"monitor-clutch",            no_argument,       &opt->monitor_clutch, 1},
+            {"monitor-gas",               no_argument,       &opt->monitor_gas, 1},
+            {"estimate-gas-deadzone-out", no_argument,       &opt->estimate_gas_deadzone_enabled, 1},
+            {"no-axis-normalization",     no_argument,       &opt->axis_normalization_enabled, 0},
+            {"debug-raw",                 no_argument,       &opt->debug_raw, 1},
+
+            {"ipc",                       no_argument,       &opt->ipc_enabled, 1},
+            {"no-console-banner",         no_argument,       &opt->no_console_banner, 1},
+
+            {"help",                      no_argument,       0, 'h'},
+            {"no_buffer",                 no_argument,       0, 'n'},
+            {"iterations",                required_argument, 0, 'i'},
+            {"margin",                    required_argument, 0, 'm'},
+            {"flags",                     required_argument, 0, 'f'},
+            {"sleep",                     required_argument, 0, 's'},
+            {"joystick",                  required_argument, 0, 'j'},
+            {"bench",                     no_argument,       0, OPT_BENCH},
+            {"bench-iters",               required_argument, 0, OPT_BENCH_ITERS},
+            {"bench-warmup",              required_argument, 0, OPT_BENCH_WARMUP},
+            {"bench-dt-ms",               required_argument, 0, OPT_BENCH_DT_MS},
+            {"bench-report-every",        required_argument, 0, OPT_BENCH_REPORT_EVERY},
+
+            {"idle",                      no_argument,       0, 'd'},
+            {"belownormal",               no_argument,       0, 'b'},
+            {"affinitymask",              required_argument, 0, 'a'},
+
+            {"gas-deadzone-in",           required_argument, 0, '1'},
+            {"gas-deadzone-out",          required_argument, 0, '2'},
+            {"gas-window",                required_argument, 0, '3'},
+            {"gas-cooldown",              required_argument, 0, '4'},
+            {"gas-timeout",               required_argument, 0, '5'},
+            {"gas-min-usage",             required_argument, 0, '6'},
+            {"adjust-deadzone-out-with-minimum", required_argument, 0, '8'},
+
+            {"clutch-repeat",             required_argument, 0, '7'},
+
+            {"vendor-id",                 required_argument, 0, 'v'},
+            {"product-id",                required_argument, 0, 'p'},
+
+            {0, 0, 0, 0}
+        };
+
+        int option_index = 0;
+
+        c = getopt_long(argc, argv, "hnf:i:j:m:s:", long_options, &option_index);
+        if (c == -1)
+            break;
+
+        switch (c) {
+        case 0:
+            break;
+
+        case 'h':
+            show_help_and_exit();
+            break;
+
+        case 'n':
+            setvbuf(stdout, NULL, _IONBF, 0);
+            break;
+
+        case 'm':
+            opt->margin_percent = (unsigned)strtoul(optarg, NULL, 10);
+            break;
+
+        case 'f':
+            opt->joy_flags = (DWORD)strtoul(optarg, NULL, 10);
+            break;
+
+        case 's':
+            opt->sleep_ms = (unsigned)strtoul(optarg, NULL, 10);
+            break;
+
+        case 'i':
+            opt->iterations = (unsigned)strtoul(optarg, NULL, 10);
+            break;
+
+        case 'j':
+            opt->joy_id = (UINT)strtoul(optarg, NULL, 10);
+            joy_id_set = 1;
+            break;
+
+        case OPT_BENCH:
+            opt->bench_mode = 1;
+            break;
+
+        case OPT_BENCH_ITERS:
+            opt->bench_iters = strtoull(optarg, NULL, 10);
+            break;
+
+        case OPT_BENCH_WARMUP:
+            opt->bench_warmup = strtoull(optarg, NULL, 10);
+            break;
+
+        case OPT_BENCH_DT_MS:
+            opt->bench_dt_ms = (unsigned)strtoul(optarg, NULL, 10);
+            break;
+
+        case OPT_BENCH_REPORT_EVERY:
+            opt->bench_report_every = strtoull(optarg, NULL, 10);
+            break;
+
+        case 'd':
+            opt->set_idle_priority = 1;
+            break;
+
+        case 'b':
+            opt->set_below_normal_priority = 1;
+            break;
+
+        case 'a':
+            opt->set_affinity = 1;
+            opt->affinity_mask = (DWORD_PTR)strtoull(optarg, NULL, 0);
+            break;
+
+        case '1':
+            opt->gas_deadzone_in = (int)strtol(optarg, NULL, 10);
+            break;
+
+        case '2':
+            opt->gas_deadzone_out = (int)strtol(optarg, NULL, 10);
+            break;
+
+        case '3':
+            opt->gas_window_sec = (int)strtol(optarg, NULL, 10);
+            break;
+
+        case '4':
+            opt->gas_cooldown_sec = (int)strtol(optarg, NULL, 10);
+            break;
+
+        case '5':
+            opt->gas_timeout_sec = (int)strtol(optarg, NULL, 10);
+            break;
+
+        case '6':
+            opt->gas_min_usage_percent = (int)strtol(optarg, NULL, 10);
+            break;
+
+        case '8':
+            opt->auto_gas_deadzone_minimum = (int)strtol(optarg, NULL, 10);
+            opt->auto_gas_deadzone_enabled = 1;
+            break;
+
+        case '7':
+            opt->clutch_repeat_required = (int)strtol(optarg, NULL, 10);
+            break;
+
+        case 'v':
+            opt->target_vendor_id = (int)strtol(optarg, NULL, 16);
+            break;
+
+        case 'p':
+            opt->target_product_id = (int)strtol(optarg, NULL, 16);
+            break;
+
+        case '?':
+            /* getopt_long already printed an error. */
+            break;
+
+        default:
+            abort();
+        }
+    }
+
+    /* If neither joystick ID nor VID/PID were provided, show help. */
+    if (!opt->bench_mode && !joy_id_set && opt->target_vendor_id == 0)
+        show_help_and_exit();
+
+    /* Validation (quietly defensive; fail fast). */
+    if (!opt->bench_mode && opt->joy_id > 15 && opt->target_vendor_id == 0) {
+        fprintf(stderr, "Error: Invalid Joystick ID (0-15).\n");
+        exit(EXIT_FAILURE);
+    }
+    if (opt->margin_percent > 100u) {
+        fprintf(stderr, "Error: margin must be 0-100.\n");
+        exit(EXIT_FAILURE);
+    }
+    if (!opt->bench_mode && opt->sleep_ms == 0u) {
+        fprintf(stderr, "Error: sleep must be > 0 ms.\n");
+        exit(EXIT_FAILURE);
+    }
+    if (opt->bench_mode && opt->bench_report_every == 0u) {
+        fprintf(stderr, "Error: --bench-report-every must be > 0.\n");
+        exit(EXIT_FAILURE);
+    }
+    if (opt->bench_mode && opt->bench_dt_ms == 0u) {
+        fprintf(stderr, "Error: --bench-dt-ms must be > 0.\n");
+        exit(EXIT_FAILURE);
+    }
+    if (opt->gas_deadzone_in < 0 || opt->gas_deadzone_in > 100 ||
+        opt->gas_deadzone_out < 0 || opt->gas_deadzone_out > 100) {
+        fprintf(stderr, "Error: gas deadzones must be 0-100.\n");
+        exit(EXIT_FAILURE);
+    }
+    if (opt->gas_window_sec <= 0 || opt->gas_timeout_sec <= 0 || opt->gas_cooldown_sec <= 0) {
+        fprintf(stderr, "Error: gas-window / gas-timeout / gas-cooldown must be > 0.\n");
+        exit(EXIT_FAILURE);
+    }
+    if (opt->gas_min_usage_percent < 0 || opt->gas_min_usage_percent > 100) {
+        fprintf(stderr, "Error: gas-min-usage must be 0-100.\n");
+        exit(EXIT_FAILURE);
+    }
+    if (opt->clutch_repeat_required <= 0) {
+        fprintf(stderr, "Error: clutch-repeat must be > 0.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    if (opt->estimate_gas_deadzone_enabled && !opt->monitor_gas) {
+        fprintf(stderr, "Error: --estimate-gas-deadzone-out requires --monitor-gas.\n");
+        exit(EXIT_FAILURE);
+    }
+    if (opt->auto_gas_deadzone_enabled && !opt->monitor_gas) {
+        fprintf(stderr, "Error: --adjust-deadzone-out-with-minimum requires --monitor-gas.\n");
+        exit(EXIT_FAILURE);
+    }
+    if (opt->auto_gas_deadzone_enabled && !opt->estimate_gas_deadzone_enabled) {
+        fprintf(stderr,
+                "Error: --adjust-deadzone-out-with-minimum also requires --estimate-gas-deadzone-out.\n");
+        exit(EXIT_FAILURE);
+    }
+    if (opt->auto_gas_deadzone_enabled &&
+        opt->auto_gas_deadzone_minimum > opt->gas_deadzone_out) {
+        fprintf(stderr,
+                "Error: adjust-deadzone-out-with-minimum (%d) must be <= gas-deadzone-out (%d).\n",
+                opt->auto_gas_deadzone_minimum, opt->gas_deadzone_out);
+        exit(EXIT_FAILURE);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/* Single-instance guard */
+
+static int
+acquire_single_instance(const Options *opt, const char *name, HANDLE *out_mutex)
+{
+    HANDLE hMutex = CreateMutexA(NULL, TRUE, name);
+    if (hMutex == NULL) {
+        fprintf(stderr, "CreateMutex failed (%lu)\n", GetLastError());
+        return 0;
+    }
+
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        ALERT_LIT(opt, "Error. Another instance of Fanatec Monitor is already running.");
+        CloseHandle(hMutex);
+        return 0;
+    }
+
+    *out_mutex = hMutex;
+    return 1;
+}
+
+static void
+cleanup_single_instance(HANDLE hMutex)
+{
+    if (!hMutex)
+        return;
+
+    ReleaseMutex(hMutex);
+    CloseHandle(hMutex);
+}
+
+/* ------------------------------------------------------------------------- */
+/* Process tuning */
+
+static void
+apply_process_tuning(const Options *opt)
+{
+    HANDLE hProcess = GetCurrentProcess();
+
+    if (opt->set_idle_priority)
+        SetPriorityClass(hProcess, IDLE_PRIORITY_CLASS);
+
+    if (opt->set_below_normal_priority)
+        SetPriorityClass(hProcess, BELOW_NORMAL_PRIORITY_CLASS);
+
+    if (opt->set_affinity)
+        SetProcessAffinityMask(hProcess, opt->affinity_mask);
+}
+
+/* ------------------------------------------------------------------------- */
+/* Device selection and monitor init */
+
+static int
+select_joystick(Options *opt)
+{
+    if (opt->target_vendor_id != 0 && opt->target_product_id != 0) {
+        if (opt->verbose)
+            printf("Looking for Controller VID:%X PID:%X...\n",
+                   opt->target_vendor_id, opt->target_product_id);
+
+        int found = find_joystick(opt->target_vendor_id, opt->target_product_id);
+        if (found != -1) {
+            opt->joy_id = (UINT)found;
+            if (opt->verbose)
+                printf("Found at ID: %u\n", opt->joy_id);
+        } else if (opt->verbose) {
+            printf("Not found at startup. Will use ID %u until error.\n", opt->joy_id);
+        }
+    }
+
+    return 1;
+}
+
+static int
+init_monitor(const Options *opt, Runtime *rt, JOYINFOEX *info)
+{
+    memset(rt, 0, sizeof(*rt));
+    rt->gas_deadzone_out_current = opt->gas_deadzone_out;
+    runtime_reset_detectors(opt, rt);
+
+    info->dwSize  = sizeof(*info);
+    info->dwFlags = opt->joy_flags;
+
+    if (opt->verbose) {
+        JOYCAPS jc;
+        MMRESULT mr = joyGetDevCaps(opt->joy_id, &jc, sizeof(jc));
+        if (mr == JOYERR_NOERROR) {
+            printf("Monitoring ID=[%u] VID=[%hX] PID=[%hX]\n",
+                   opt->joy_id, jc.wMid, jc.wPid);
+        }
+        printf("Axis Max: [%lu]\n", (unsigned long)rt->axis_max);
+        printf("Axis normalization: %s\n",
+               opt->axis_normalization_enabled ? "enabled (normalize inverted -> 0..max)"
+                                              : "disabled (use raw 0..max)");
+    }
+
+    if (!opt->no_console_banner)
+        printf("Fanatec Pedals Monitor started.\n");
+
+    return 1;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Main loop */
+
+static void
+run_loop(Options *opt, Runtime *rt, JOYINFOEX *info)
+{
+    for (unsigned loop = 0; opt->iterations == 0 || loop < opt->iterations; ++loop) {
+
+        MMRESULT mr = joyGetPosEx(opt->joy_id, info);
+
+        if (mr != JOYERR_NOERROR) {
+            printf("Error reading joystick (Code %u)\n", (unsigned)mr);
+
+            if (opt->target_vendor_id != 0 && opt->target_product_id != 0) {
+                ALERT_LIT(opt, "Controller disconnected. Waiting 60 seconds.");
+
+                for (;;) {
+                    Sleep(60000);
+
+                    int new_id = find_joystick(opt->target_vendor_id, opt->target_product_id);
+                    if (new_id != -1) {
+                        opt->joy_id = (UINT)new_id;
+
+                        ALERT_LIT(opt, "Controller found. Resuming monitoring.");
+
+                        info->dwSize  = sizeof(*info);
+                        info->dwFlags = opt->joy_flags;
+
+                        rt->gas_deadzone_out_current = opt->gas_deadzone_out;
+                        runtime_reset_detectors(opt, rt);
+
+                        break;
+                    }
+
+                    ALERT_LIT(opt, "Controller not found. Retrying.");
+                    if (opt->verbose)
+                        printf("Scan failed. Retrying in 60s...\n");
+                }
+
+                continue;
+            }
+
+            Sleep(opt->sleep_ms);
+            continue;
+        }
+
+        DWORD now = GetTickCount();
+
+        DWORD raw_gas    = info->dwYpos;
+        DWORD raw_clutch = info->dwRpos;
+
+        DWORD gas = normalize_pedal_axis(opt->axis_normalization_enabled, raw_gas, rt->axis_max);
+        DWORD clutch = normalize_pedal_axis(opt->axis_normalization_enabled, raw_clutch, rt->axis_max);
+
+        if (opt->verbose) {
+            if (opt->debug_raw) {
+                printf("%lu, gas_raw=%lu gas_norm=%lu, clutch_raw=%lu clutch_norm=%lu\n",
+                       (unsigned long)now,
+                       (unsigned long)raw_gas, (unsigned long)gas,
+                       (unsigned long)raw_clutch, (unsigned long)clutch);
+            } else {
+                printf("%lu, gas=%lu, clutch=%lu\n",
+                       (unsigned long)now,
+                       (unsigned long)gas,
+                       (unsigned long)clutch);
+            }
+        }
+
+        handle_clutch(opt, rt, gas, clutch);
+        handle_gas(opt, rt, now, gas);
+
+        Sleep(opt->sleep_ms);
+    }
+}
+
+static void
+run_bench_loop(Options *opt)
+{
+    Runtime rt;
+    uint32_t lcg = 0x00C0FFEEu;
+    uint64_t checksum = 0u;
+    DWORD now = 0u;
+
+    LARGE_INTEGER qpc_freq;
+    int have_qpc = QueryPerformanceFrequency(&qpc_freq);
+
+    HANDLE hThread = GetCurrentThread();
+    int have_cycles = 1;
+    int have_cpu_time = 1;
+    ULONG64 cycles_start = 0u, cycles_block_start = 0u;
+    ULONGLONG cpu100ns_start = 0u, cpu100ns_block_start = 0u;
+    LONGLONG active_ticks_cum = 0, active_ticks_block = 0;
+
+    memset(&rt, 0, sizeof(rt));
+    rt.gas_deadzone_out_current = opt->gas_deadzone_out;
+    runtime_reset_detectors(opt, &rt);
+
+    g_bench_alert_counter = 0u;
+
+    if (!opt->no_console_banner) {
+        printf("Fanatec Pedals Monitor benchmark mode started.\\n");
+    }
+
+    for (uint64_t i = 0; i < opt->bench_warmup; ++i) {
+        lcg = lcg * 1664525u + 1013904223u;
+        DWORD raw_gas = lcg % (rt.axis_max + 1u);
+        lcg = lcg * 1664525u + 1013904223u;
+        DWORD raw_clutch = lcg % (rt.axis_max + 1u);
+
+        DWORD gas = normalize_pedal_axis(opt->axis_normalization_enabled, raw_gas, rt.axis_max);
+        DWORD clutch = normalize_pedal_axis(opt->axis_normalization_enabled, raw_clutch, rt.axis_max);
+
+        now += opt->bench_dt_ms;
+        handle_clutch(opt, &rt, gas, clutch);
+        handle_gas(opt, &rt, now, gas);
+
+        checksum ^= ((uint64_t)gas << 1) ^ ((uint64_t)clutch << 17) ^ (uint64_t)rt.peak_gas_in_window;
+        checksum = (checksum << 7) | (checksum >> (64 - 7));
+
+        Sleep(opt->sleep_ms);
+    }
+
+    if (!QueryThreadCycleTime(hThread, &cycles_start))
+        have_cycles = 0;
+    cycles_block_start = cycles_start;
+
+    {
+        FILETIME c, e, k, u;
+        ULARGE_INTEGER ku, uu;
+        if (!GetThreadTimes(hThread, &c, &e, &k, &u)) {
+            have_cpu_time = 0;
+        } else {
+            ku.LowPart = k.dwLowDateTime; ku.HighPart = k.dwHighDateTime;
+            uu.LowPart = u.dwLowDateTime; uu.HighPart = u.dwHighDateTime;
+            cpu100ns_start = ku.QuadPart + uu.QuadPart;
+        }
+    }
+    cpu100ns_block_start = cpu100ns_start;
+
+    uint64_t alerts_cum_base = g_bench_alert_counter;
+    uint64_t alerts_block_base = alerts_cum_base;
+
+    for (uint64_t i = 1; i <= opt->bench_iters; ++i) {
+        LARGE_INTEGER t0, t1;
+
+        if (have_qpc)
+            QueryPerformanceCounter(&t0);
+
+        lcg = lcg * 1664525u + 1013904223u;
+        DWORD raw_gas = lcg % (rt.axis_max + 1u);
+        lcg = lcg * 1664525u + 1013904223u;
+        DWORD raw_clutch = lcg % (rt.axis_max + 1u);
+
+        DWORD gas = normalize_pedal_axis(opt->axis_normalization_enabled, raw_gas, rt.axis_max);
+        DWORD clutch = normalize_pedal_axis(opt->axis_normalization_enabled, raw_clutch, rt.axis_max);
+
+        now += opt->bench_dt_ms;
+        handle_clutch(opt, &rt, gas, clutch);
+        handle_gas(opt, &rt, now, gas);
+
+        checksum ^= ((uint64_t)gas << 3) ^ ((uint64_t)clutch << 19)
+                    ^ (uint64_t)rt.last_full_throttle_ms ^ (uint64_t)rt.best_estimate_percent;
+        checksum += (uint64_t)rt.clutch_repeat_count + (uint64_t)rt.gas_deadzone_out_current;
+
+        if (have_qpc) {
+            QueryPerformanceCounter(&t1);
+            LONGLONG dt = t1.QuadPart - t0.QuadPart;
+            active_ticks_cum += dt;
+            active_ticks_block += dt;
+        }
+
+        Sleep(opt->sleep_ms);
+
+        if ((i % opt->bench_report_every) == 0u) {
+            ULONG64 cycles_now = 0u;
+            ULONGLONG cpu100ns_now = 0u;
+            int cycles_ok = have_cycles && QueryThreadCycleTime(hThread, &cycles_now);
+            int cpu_ok = have_cpu_time;
+
+            if (cpu_ok) {
+                FILETIME c, e, k, u;
+                ULARGE_INTEGER ku, uu;
+                if (!GetThreadTimes(hThread, &c, &e, &k, &u)) {
+                    cpu_ok = 0;
+                } else {
+                    ku.LowPart = k.dwLowDateTime; ku.HighPart = k.dwHighDateTime;
+                    uu.LowPart = u.dwLowDateTime; uu.HighPart = u.dwHighDateTime;
+                    cpu100ns_now = ku.QuadPart + uu.QuadPart;
+                }
+            }
+
+            uint64_t block_iters = opt->bench_report_every;
+            uint64_t cum_iters = i;
+            uint64_t alerts_now = g_bench_alert_counter;
+            uint64_t alerts_block = alerts_now - alerts_block_base;
+            uint64_t alerts_cum = alerts_now - alerts_cum_base;
+
+            printf("[Bench] iter=%" PRIu64 " block: ", i);
+            if (cycles_ok) {
+                ULONG64 delta_cycles = cycles_now - cycles_block_start;
+                printf("cycles/iter=%.2f  ", (double)delta_cycles / (double)block_iters);
+            } else {
+                printf("cycles/iter=N/A  ");
+            }
+            if (cpu_ok) {
+                ULONGLONG delta_cpu = cpu100ns_now - cpu100ns_block_start;
+                printf("cpu_ns/iter=%.2f  ", (double)(delta_cpu * 100.0) / (double)block_iters);
+            } else {
+                printf("cpu_ns/iter=N/A  ");
+            }
+            if (have_qpc) {
+                printf("wall_us/iter=%.2f  ",
+                       ((double)active_ticks_block * 1000000.0) /
+                       ((double)qpc_freq.QuadPart * (double)block_iters));
+            } else {
+                printf("wall_us/iter=N/A  ");
+            }
+            if (cycles_ok && cpu_ok && (cpu100ns_now > cpu100ns_block_start)) {
+                ULONG64 delta_cycles = cycles_now - cycles_block_start;
+                double cpu_seconds = (double)(cpu100ns_now - cpu100ns_block_start) * 1e-7;
+                printf("eff_GHz=%.3f  ", (double)delta_cycles / cpu_seconds / 1e9);
+            } else {
+                printf("eff_GHz=N/A  ");
+            }
+            printf("alerts=%" PRIu64 "  checksum=%" PRIu64 "\n", alerts_block, checksum);
+
+            printf("        cumulative: ");
+            if (cycles_ok) {
+                ULONG64 delta_cycles = cycles_now - cycles_start;
+                printf("cycles/iter=%.2f  ", (double)delta_cycles / (double)cum_iters);
+            } else {
+                printf("cycles/iter=N/A  ");
+            }
+            if (cpu_ok) {
+                ULONGLONG delta_cpu = cpu100ns_now - cpu100ns_start;
+                printf("cpu_ns/iter=%.2f  ", (double)(delta_cpu * 100.0) / (double)cum_iters);
+            } else {
+                printf("cpu_ns/iter=N/A  ");
+            }
+            if (have_qpc) {
+                printf("wall_us/iter=%.2f  ",
+                       ((double)active_ticks_cum * 1000000.0) /
+                       ((double)qpc_freq.QuadPart * (double)cum_iters));
+            } else {
+                printf("wall_us/iter=N/A  ");
+            }
+            if (cycles_ok && cpu_ok && (cpu100ns_now > cpu100ns_start)) {
+                ULONG64 delta_cycles = cycles_now - cycles_start;
+                double cpu_seconds = (double)(cpu100ns_now - cpu100ns_start) * 1e-7;
+                printf("eff_GHz=%.3f  ", (double)delta_cycles / cpu_seconds / 1e9);
+            } else {
+                printf("eff_GHz=N/A  ");
+            }
+            printf("alerts=%" PRIu64 "  checksum=%" PRIu64 "\n", alerts_cum, checksum);
+
+            if (cycles_ok)
+                cycles_block_start = cycles_now;
+            else
+                have_cycles = 0;
+
+            if (cpu_ok)
+                cpu100ns_block_start = cpu100ns_now;
+            else
+                have_cpu_time = 0;
+
+            active_ticks_block = 0;
+            alerts_block_base = alerts_now;
+        }
+    }
+
+    g_bench_sink = checksum;
+    printf("[Bench] done: checksum=%" PRIu64 " sink=%" PRIu64 "\n", checksum, g_bench_sink);
+}
+
+/* ------------------------------------------------------------------------- */
+/* Monitoring: clutch */
+
+static void
+handle_clutch(const Options *opt, Runtime *rt, DWORD gas, DWORD clutch)
+{
+    if (!opt->monitor_clutch)
+        return;
+
+    if (gas <= rt->gas_idle_max && clutch > 0) {
+        DWORD delta = (clutch >= rt->last_clutch) ? (clutch - rt->last_clutch)
+                                                  : (rt->last_clutch - clutch);
+
+        if (delta <= rt->axis_margin)
+            rt->clutch_repeat_count++;
+        else
+            rt->clutch_repeat_count = 0;
+    } else {
+        rt->clutch_repeat_count = 0;
+    }
+
+    rt->last_clutch = clutch;
+
+    if (rt->clutch_repeat_count >= opt->clutch_repeat_required) {
+        ALERT_LIT(opt, "Rudder");
+        rt->clutch_repeat_count = 0;
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/* Monitoring: gas drift + estimator */
+
+static void
+handle_gas(const Options *opt, Runtime *rt, DWORD now, DWORD gas)
+{
+    if (!opt->monitor_gas)
+        return;
+
+    /* Activity detection / “is_racing” state */
+    if (gas > rt->gas_idle_max) {
+        if (!rt->is_racing) {
+            rt->last_full_throttle_ms = now;
+            rt->peak_gas_in_window = 0;
+
+            if (opt->estimate_gas_deadzone_enabled) {
+                rt->estimate_window_start_ms = now;
+                rt->estimate_window_peak_percent = 0u;
+            }
+
+            if (opt->verbose && !opt->bench_mode)
+                printf("Gas: Activity Resumed.\n");
+        }
+
+        rt->is_racing = TRUE;
+        rt->last_gas_activity_ms = now;
+    } else {
+        if (rt->is_racing && (now - rt->last_gas_activity_ms > rt->gas_timeout_ms)) {
+            if (opt->verbose && !opt->bench_mode)
+                printf("Gas: Auto-Pause (Idle for %d s).\n", opt->gas_timeout_sec);
+
+            rt->is_racing = FALSE;
+
+            if (opt->estimate_gas_deadzone_enabled) {
+                rt->estimate_window_start_ms = now;
+                rt->estimate_window_peak_percent = 0u;
+            }
+        }
+    }
+
+    if (!rt->is_racing)
+        return;
+
+    /* Track peak in the current drift window */
+    if (gas > rt->peak_gas_in_window)
+        rt->peak_gas_in_window = gas;
+
+    /* Full-throttle observed => reset drift window */
+    if (gas >= rt->gas_full_min) {
+        rt->last_full_throttle_ms = now;
+        rt->peak_gas_in_window = 0;
+        handle_gas_estimator(opt, rt, now, gas);
+        return;
+    }
+
+    /* Drift window expired => maybe alert */
+    if ((now - rt->last_full_throttle_ms) > rt->gas_window_ms) {
+
+        if ((now - rt->last_gas_alert_ms) > rt->gas_cooldown_ms) {
+
+            unsigned percent_reached =
+                (unsigned)((rt->peak_gas_in_window * 100u) / rt->axis_max);
+
+            if (percent_reached > (unsigned)opt->gas_min_usage_percent) {
+                static char gas_msg[] = "Gas ******* percent.";
+                char *end_of_digits = gas_msg + 10; /* end of ******* field */
+                append_digits_from_right(percent_reached, ' ', end_of_digits, 11);
+
+                ALERT_BUF(opt, gas_msg);
+
+                rt->last_gas_alert_ms = now;
+            }
+        }
+    }
+
+    handle_gas_estimator(opt, rt, now, gas);
+}
+
+static void
+handle_gas_estimator(const Options *opt, Runtime *rt, DWORD now, DWORD gas)
+{
+    if (!opt->estimate_gas_deadzone_enabled)
+        return;
+
+    if (gas > rt->gas_idle_max) {
+        unsigned current_percent = (unsigned)((gas * 100u) / rt->axis_max);
+        if (current_percent > rt->estimate_window_peak_percent)
+            rt->estimate_window_peak_percent = current_percent;
+    }
+
+    if ((now - rt->estimate_window_start_ms) < rt->gas_cooldown_ms)
+        return;
+
+    if (rt->estimate_window_peak_percent >= (unsigned)opt->gas_min_usage_percent) {
+        unsigned candidate = rt->estimate_window_peak_percent;
+
+        if (candidate < rt->best_estimate_percent) {
+            rt->best_estimate_percent = candidate;
+
+            if (rt->best_estimate_percent < rt->last_printed_estimate &&
+                (now - rt->last_estimate_print_ms) >= rt->gas_cooldown_ms) {
+
+                static char speak_buf[] = "New deadzone estimation:*** percent.";
+                char *last_valid = speak_buf + 26; /* points at last '*' */
+                append_digits_from_right(rt->best_estimate_percent, ':', last_valid, sizeof(speak_buf));
+
+                ALERT_BUF(opt, speak_buf);
+
+                rt->last_printed_estimate = rt->best_estimate_percent;
+                rt->last_estimate_print_ms = now;
+            }
+
+            if (opt->auto_gas_deadzone_enabled &&
+                (int)rt->best_estimate_percent < rt->gas_deadzone_out_current &&
+                (int)rt->best_estimate_percent >= opt->auto_gas_deadzone_minimum) {
+
+                rt->gas_deadzone_out_current = (int)rt->best_estimate_percent;
+                runtime_recompute_thresholds(opt, rt);
+
+                if (!opt->bench_mode) {
+                    printf("[AutoAdjust] gas-deadzone-out updated to %d (min=%d)\n",
+                           rt->gas_deadzone_out_current, opt->auto_gas_deadzone_minimum);
+                }
+            }
+        }
+    }
+
+    rt->estimate_window_start_ms = now;
+    rt->estimate_window_peak_percent = 0u;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Device discovery */
+
+static int
+find_joystick(int targetVid, int targetPid)
+{
+    JOYCAPS jc;
+    int numDevs = (int)joyGetNumDevs();
+
+    for (int i = 0; i < numDevs; i++) {
+        if (joyGetDevCaps(i, &jc, sizeof(jc)) == JOYERR_NOERROR) {
+            if (jc.wMid == targetVid && jc.wPid == targetPid)
+                return i;
+        }
+    }
+    return -1;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Formatting (no snprintf) */
+
+static char *
+append_digits_from_right(uint32_t value, char special_char,
+                         char *last_valid, size_t total_buf_size)
+{
+    char *buf_start = last_valid - (ptrdiff_t)(total_buf_size - 1);
+    char *cursor = last_valid;
+
+    assert(last_valid != NULL);
+    assert(total_buf_size >= 11);
+  
+    do {
+        *cursor-- = (char)('0' + (value % 10u));
+        value /= 10u;
+    } while (value != 0u);
+
+    char *digits_start = cursor + 1;
+
+    while (cursor >= buf_start && *cursor != special_char)
+        *cursor-- = ' ';
+
+    return digits_start;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Axis normalization + runtime init */
+
+static inline DWORD
+normalize_pedal_axis(int enabled, DWORD raw, DWORD axis_max)
+{
+    return enabled ? (axis_max - raw) : raw;
+}
+
+static void
+runtime_recompute_thresholds(const Options *opt, Runtime *rt)
+{
+    rt->axis_max    = (opt->joy_flags & JOY_RETURNRAWDATA) ? 1023u : 65535u;
+    rt->axis_margin = (DWORD)((rt->axis_max * (DWORD)opt->margin_percent) / 100u);
+
+    rt->gas_idle_max = (DWORD)((rt->axis_max * (DWORD)opt->gas_deadzone_in) / 100u);
+    rt->gas_full_min = (DWORD)((rt->axis_max * (DWORD)rt->gas_deadzone_out_current) / 100u);
+
+    rt->gas_timeout_ms  = (DWORD)opt->gas_timeout_sec  * 1000u;
+    rt->gas_window_ms   = (DWORD)opt->gas_window_sec   * 1000u;
+    rt->gas_cooldown_ms = (DWORD)opt->gas_cooldown_sec * 1000u;
+}
+
+static void
+runtime_reset_detectors(const Options *opt, Runtime *rt)
+{
+    DWORD now = GetTickCount();
+
+    rt->last_clutch = 0;
+    rt->clutch_repeat_count = 0;
+
+    rt->is_racing = FALSE;
+    rt->peak_gas_in_window = 0;
+    rt->last_full_throttle_ms = now;
+    rt->last_gas_activity_ms  = now;
+    rt->last_gas_alert_ms     = 0;
+
+    rt->best_estimate_percent = 100u;
+    rt->last_printed_estimate = 100u;
+    rt->estimate_window_peak_percent = 0u;
+    rt->estimate_window_start_ms = now;
+    rt->last_estimate_print_ms  = 0;
+
+    runtime_recompute_thresholds(opt, rt);
+}
+
+/* ------------------------------------------------------------------------- */
+/* Alerts (TTS always enabled) */
+
+static void
+alert_msg(const Options *opt, const char *text, size_t text_len, int log_to_console)
+{
+    if (opt->bench_mode) {
+        (void)text;
+        (void)text_len;
+        (void)log_to_console;
+        g_bench_alert_counter++;
+        return;
+    }
+
+    if (log_to_console) {
+        SYSTEMTIME t;
+        GetLocalTime(&t);
+        printf("[%.4d-%.2d-%.2d %.2d:%.2d:%.2d] %.*s\n",
+               t.wYear, t.wMonth, t.wDay,
+               t.wHour, t.wMinute, t.wSecond,
+               (int)text_len, text);
+    }
+
+    if (opt->ipc_enabled)
+        speak_ipc(text, text_len);
+    else
+        speak_external(text, text_len);
+}
+
+static void
+speak_ipc(const char *text, size_t text_len)
+{
+    static const char pipe_name[] = "\\\\.\\pipe\\ipc_pipe_vr_server_commands";
+    static const char prefix[]    = "SPEAK ";
+
+    char buffer[512];
+    size_t prefix_len = sizeof(prefix) - 1;
+
+    assert(prefix_len + text_len + 1 < sizeof(buffer));
+
+    memcpy(buffer, prefix, prefix_len);
+    memcpy(buffer + prefix_len, text, text_len);
+    buffer[prefix_len + text_len] = '\n';
+
+    HANDLE hPipe = CreateFileA(pipe_name, GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+    if (hPipe != INVALID_HANDLE_VALUE) {
+        DWORD written;
+        WriteFile(hPipe, buffer, (DWORD)(prefix_len + text_len + 1), &written, NULL);
+        CloseHandle(hPipe);
+    }
+}
+
+static void
+speak_external(const char *text, size_t text_len)
+{
+    static const char exe[] =
+        "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+
+    static const char arg_prefix[] =
+        "dummy1stArg -NoProfile -NoLogo -ExecutionPolicy Bypass -WindowStyle Hidden "
+        "-File .\\saySomething.ps1 \"";
+
+    char cmdline[512];
+    const size_t prefix_len = sizeof(arg_prefix) - 1;
+    size_t len = prefix_len + text_len;
+
+    assert(len + 2 < sizeof(cmdline));
+
+    memcpy(cmdline, arg_prefix, prefix_len);
+    memcpy(cmdline + prefix_len, text, text_len);
+    cmdline[len++] = '"';
+    cmdline[len]   = '\0';
+
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+    ZeroMemory(&pi, sizeof(pi));
+
+    if (CreateProcessA(
+            exe,
+            cmdline,
+            NULL, NULL,
+            FALSE,
+            CREATE_NO_WINDOW,
+            NULL, NULL,
+            &si, &pi))
+    {
+        WaitForSingleObject(pi.hProcess, INFINITE);  /* CRITICAL: Intentionally block the C thread until PowerShell finishes speaking. */      
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+}
