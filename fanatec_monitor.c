@@ -24,6 +24,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <inttypes.h>
 
 #include <windows.h>
 #include <mmsystem.h>
@@ -61,6 +62,13 @@ typedef struct Options {
     /* Loop control */
     unsigned iterations;         /* 0 => infinite */
     unsigned sleep_ms;           /* must be > 0 */
+
+    /* Deterministic microbenchmark mode */
+    int      bench_mode;
+    uint64_t bench_iters;
+    uint64_t bench_warmup;
+    unsigned bench_dt_ms;
+    uint64_t bench_report_every;
 
     /* Clutch tuning */
     unsigned margin_percent;     /* 0..100 */
@@ -140,6 +148,7 @@ static int  select_joystick(Options *opt);
 static int  init_monitor(const Options *opt, Runtime *rt, JOYINFOEX *info);
 
 static void run_loop(Options *opt, Runtime *rt, JOYINFOEX *info);
+static void run_bench_loop(Options *opt);
 
 /* Monitoring helpers */
 static void handle_clutch(const Options *opt, Runtime *rt, DWORD gas, DWORD clutch);
@@ -165,6 +174,9 @@ static void alert_msg(const Options *opt, const char *text, size_t text_len, int
 static void speak_ipc(const char *text, size_t text_len);
 static void speak_external(const char *text, size_t text_len);
 
+static volatile uint64_t g_bench_alert_counter = 0;
+static volatile uint64_t g_bench_sink = 0;
+
 #define ALERT_LIT(opt, s) alert_msg((opt), (s), sizeof(s) - 1, 1)
 #define ALERT_BUF(opt, s) alert_msg((opt), (s), strlen(s), 1)
 
@@ -182,6 +194,12 @@ main(int argc, char **argv)
     options_set_defaults(&opt);
 
     parse_args(argc, argv, &opt);
+
+    if (opt.bench_mode) {
+        apply_process_tuning(&opt);
+        run_bench_loop(&opt);
+        return EXIT_SUCCESS;
+    }
 
     if (!acquire_single_instance(&opt, "fanatec_monitor_single_instance_mutex", &hMutex))
         return EXIT_FAILURE;
@@ -226,6 +244,12 @@ options_set_defaults(Options *opt)
 
     opt->iterations = 1;              /* 0 => infinite */
     opt->sleep_ms = 1000;
+
+    opt->bench_mode = 0;
+    opt->bench_iters = 1000000u;
+    opt->bench_warmup = 200000u;
+    opt->bench_dt_ms = 1u;
+    opt->bench_report_every = 1000u;
 
     opt->margin_percent = 5;
     opt->clutch_repeat_required = 4;
@@ -272,7 +296,13 @@ show_help_and_exit(void)
 
     puts("  General:");
     puts("    --verbose / --brief     Verbose logging on/off.");
-    puts("    --sleep MS              Poll interval in ms (default 1000; must be > 0).");
+    puts("    --sleep MS              Poll interval in ms (default 1000; must be > 0 in normal mode).\n");
+    puts("  Deterministic benchmark mode:");
+    puts("    --bench                 Enable microbenchmark mode (no joystick I/O).\n"
+         "    --bench-iters N         Measured iterations, default 1000000.\n"
+         "    --bench-warmup N        Warmup iterations, default 200000.\n"
+         "    --bench-dt-ms MS        Virtual dt for monitor logic, default 1.\n"
+         "    --bench-report-every N  Print report every N measured iterations, default 1000.");
     puts("    --iterations N          0 => infinite.");
     puts("    --flags N               JOYINFOEX flags; default JOY_RETURNALL.");
     puts("    --no-axis-normalization Use raw axis direction (no inversion).");
@@ -306,6 +336,13 @@ parse_args(int argc, char **argv, Options *opt)
 {
     int c;
     int joy_id_set = 0;
+    enum {
+        OPT_BENCH = 1000,
+        OPT_BENCH_ITERS,
+        OPT_BENCH_WARMUP,
+        OPT_BENCH_DT_MS,
+        OPT_BENCH_REPORT_EVERY
+    };
 
     while (1) {
         struct option long_options[] = {
@@ -327,6 +364,11 @@ parse_args(int argc, char **argv, Options *opt)
             {"flags",                     required_argument, 0, 'f'},
             {"sleep",                     required_argument, 0, 's'},
             {"joystick",                  required_argument, 0, 'j'},
+            {"bench",                     no_argument,       0, OPT_BENCH},
+            {"bench-iters",               required_argument, 0, OPT_BENCH_ITERS},
+            {"bench-warmup",              required_argument, 0, OPT_BENCH_WARMUP},
+            {"bench-dt-ms",               required_argument, 0, OPT_BENCH_DT_MS},
+            {"bench-report-every",        required_argument, 0, OPT_BENCH_REPORT_EVERY},
 
             {"idle",                      no_argument,       0, 'd'},
             {"belownormal",               no_argument,       0, 'b'},
@@ -385,6 +427,26 @@ parse_args(int argc, char **argv, Options *opt)
         case 'j':
             opt->joy_id = (UINT)strtoul(optarg, NULL, 10);
             joy_id_set = 1;
+            break;
+
+        case OPT_BENCH:
+            opt->bench_mode = 1;
+            break;
+
+        case OPT_BENCH_ITERS:
+            opt->bench_iters = strtoull(optarg, NULL, 10);
+            break;
+
+        case OPT_BENCH_WARMUP:
+            opt->bench_warmup = strtoull(optarg, NULL, 10);
+            break;
+
+        case OPT_BENCH_DT_MS:
+            opt->bench_dt_ms = (unsigned)strtoul(optarg, NULL, 10);
+            break;
+
+        case OPT_BENCH_REPORT_EVERY:
+            opt->bench_report_every = strtoull(optarg, NULL, 10);
             break;
 
         case 'd':
@@ -451,11 +513,11 @@ parse_args(int argc, char **argv, Options *opt)
     }
 
     /* If neither joystick ID nor VID/PID were provided, show help. */
-    if (!joy_id_set && opt->target_vendor_id == 0)
+    if (!opt->bench_mode && !joy_id_set && opt->target_vendor_id == 0)
         show_help_and_exit();
 
     /* Validation (quietly defensive; fail fast). */
-    if (opt->joy_id > 15 && opt->target_vendor_id == 0) {
+    if (!opt->bench_mode && opt->joy_id > 15 && opt->target_vendor_id == 0) {
         fprintf(stderr, "Error: Invalid Joystick ID (0-15).\n");
         exit(EXIT_FAILURE);
     }
@@ -463,8 +525,16 @@ parse_args(int argc, char **argv, Options *opt)
         fprintf(stderr, "Error: margin must be 0-100.\n");
         exit(EXIT_FAILURE);
     }
-    if (opt->sleep_ms == 0u) {
+    if (!opt->bench_mode && opt->sleep_ms == 0u) {
         fprintf(stderr, "Error: sleep must be > 0 ms.\n");
+        exit(EXIT_FAILURE);
+    }
+    if (opt->bench_mode && opt->bench_report_every == 0u) {
+        fprintf(stderr, "Error: --bench-report-every must be > 0.\n");
+        exit(EXIT_FAILURE);
+    }
+    if (opt->bench_mode && opt->bench_dt_ms == 0u) {
+        fprintf(stderr, "Error: --bench-dt-ms must be > 0.\n");
         exit(EXIT_FAILURE);
     }
     if (opt->gas_deadzone_in < 0 || opt->gas_deadzone_in > 100 ||
@@ -685,6 +755,205 @@ run_loop(Options *opt, Runtime *rt, JOYINFOEX *info)
     }
 }
 
+static void
+run_bench_loop(Options *opt)
+{
+    Runtime rt;
+    uint32_t lcg = 0x00C0FFEEu;
+    uint64_t checksum = 0u;
+    DWORD now = 0u;
+
+    LARGE_INTEGER qpc_freq;
+    int have_qpc = QueryPerformanceFrequency(&qpc_freq);
+
+    HANDLE hThread = GetCurrentThread();
+    int have_cycles = 1;
+    int have_cpu_time = 1;
+    ULONG64 cycles_start = 0u, cycles_block_start = 0u;
+    ULONGLONG cpu100ns_start = 0u, cpu100ns_block_start = 0u;
+    LONGLONG active_ticks_cum = 0, active_ticks_block = 0;
+
+    memset(&rt, 0, sizeof(rt));
+    rt.gas_deadzone_out_current = opt->gas_deadzone_out;
+    runtime_reset_detectors(opt, &rt);
+
+    g_bench_alert_counter = 0u;
+
+    if (!opt->no_console_banner) {
+        printf("Fanatec Pedals Monitor benchmark mode started.\\n");
+    }
+
+    for (uint64_t i = 0; i < opt->bench_warmup; ++i) {
+        lcg = lcg * 1664525u + 1013904223u;
+        DWORD raw_gas = lcg % (rt.axis_max + 1u);
+        lcg = lcg * 1664525u + 1013904223u;
+        DWORD raw_clutch = lcg % (rt.axis_max + 1u);
+
+        DWORD gas = normalize_pedal_axis(opt->axis_normalization_enabled, raw_gas, rt.axis_max);
+        DWORD clutch = normalize_pedal_axis(opt->axis_normalization_enabled, raw_clutch, rt.axis_max);
+
+        now += opt->bench_dt_ms;
+        handle_clutch(opt, &rt, gas, clutch);
+        handle_gas(opt, &rt, now, gas);
+
+        checksum ^= ((uint64_t)gas << 1) ^ ((uint64_t)clutch << 17) ^ (uint64_t)rt.peak_gas_in_window;
+        checksum = (checksum << 7) | (checksum >> (64 - 7));
+
+        Sleep(opt->sleep_ms);
+    }
+
+    if (!QueryThreadCycleTime(hThread, &cycles_start))
+        have_cycles = 0;
+    cycles_block_start = cycles_start;
+
+    {
+        FILETIME c, e, k, u;
+        ULARGE_INTEGER ku, uu;
+        if (!GetThreadTimes(hThread, &c, &e, &k, &u)) {
+            have_cpu_time = 0;
+        } else {
+            ku.LowPart = k.dwLowDateTime; ku.HighPart = k.dwHighDateTime;
+            uu.LowPart = u.dwLowDateTime; uu.HighPart = u.dwHighDateTime;
+            cpu100ns_start = ku.QuadPart + uu.QuadPart;
+        }
+    }
+    cpu100ns_block_start = cpu100ns_start;
+
+    uint64_t alerts_cum_base = g_bench_alert_counter;
+    uint64_t alerts_block_base = alerts_cum_base;
+
+    for (uint64_t i = 1; i <= opt->bench_iters; ++i) {
+        LARGE_INTEGER t0, t1;
+
+        if (have_qpc)
+            QueryPerformanceCounter(&t0);
+
+        lcg = lcg * 1664525u + 1013904223u;
+        DWORD raw_gas = lcg % (rt.axis_max + 1u);
+        lcg = lcg * 1664525u + 1013904223u;
+        DWORD raw_clutch = lcg % (rt.axis_max + 1u);
+
+        DWORD gas = normalize_pedal_axis(opt->axis_normalization_enabled, raw_gas, rt.axis_max);
+        DWORD clutch = normalize_pedal_axis(opt->axis_normalization_enabled, raw_clutch, rt.axis_max);
+
+        now += opt->bench_dt_ms;
+        handle_clutch(opt, &rt, gas, clutch);
+        handle_gas(opt, &rt, now, gas);
+
+        checksum ^= ((uint64_t)gas << 3) ^ ((uint64_t)clutch << 19)
+                    ^ (uint64_t)rt.last_full_throttle_ms ^ (uint64_t)rt.best_estimate_percent;
+        checksum += (uint64_t)rt.clutch_repeat_count + (uint64_t)rt.gas_deadzone_out_current;
+
+        if (have_qpc) {
+            QueryPerformanceCounter(&t1);
+            LONGLONG dt = t1.QuadPart - t0.QuadPart;
+            active_ticks_cum += dt;
+            active_ticks_block += dt;
+        }
+
+        Sleep(opt->sleep_ms);
+
+        if ((i % opt->bench_report_every) == 0u) {
+            ULONG64 cycles_now = 0u;
+            ULONGLONG cpu100ns_now = 0u;
+            int cycles_ok = have_cycles && QueryThreadCycleTime(hThread, &cycles_now);
+            int cpu_ok = have_cpu_time;
+
+            if (cpu_ok) {
+                FILETIME c, e, k, u;
+                ULARGE_INTEGER ku, uu;
+                if (!GetThreadTimes(hThread, &c, &e, &k, &u)) {
+                    cpu_ok = 0;
+                } else {
+                    ku.LowPart = k.dwLowDateTime; ku.HighPart = k.dwHighDateTime;
+                    uu.LowPart = u.dwLowDateTime; uu.HighPart = u.dwHighDateTime;
+                    cpu100ns_now = ku.QuadPart + uu.QuadPart;
+                }
+            }
+
+            uint64_t block_iters = opt->bench_report_every;
+            uint64_t cum_iters = i;
+            uint64_t alerts_now = g_bench_alert_counter;
+            uint64_t alerts_block = alerts_now - alerts_block_base;
+            uint64_t alerts_cum = alerts_now - alerts_cum_base;
+
+            printf("[Bench] iter=%" PRIu64 " block: ", i);
+            if (cycles_ok) {
+                ULONG64 delta_cycles = cycles_now - cycles_block_start;
+                printf("cycles/iter=%.2f  ", (double)delta_cycles / (double)block_iters);
+            } else {
+                printf("cycles/iter=N/A  ");
+            }
+            if (cpu_ok) {
+                ULONGLONG delta_cpu = cpu100ns_now - cpu100ns_block_start;
+                printf("cpu_ns/iter=%.2f  ", (double)(delta_cpu * 100.0) / (double)block_iters);
+            } else {
+                printf("cpu_ns/iter=N/A  ");
+            }
+            if (have_qpc) {
+                printf("wall_us/iter=%.2f  ",
+                       ((double)active_ticks_block * 1000000.0) /
+                       ((double)qpc_freq.QuadPart * (double)block_iters));
+            } else {
+                printf("wall_us/iter=N/A  ");
+            }
+            if (cycles_ok && cpu_ok && (cpu100ns_now > cpu100ns_block_start)) {
+                ULONG64 delta_cycles = cycles_now - cycles_block_start;
+                double cpu_seconds = (double)(cpu100ns_now - cpu100ns_block_start) * 1e-7;
+                printf("eff_GHz=%.3f  ", (double)delta_cycles / cpu_seconds / 1e9);
+            } else {
+                printf("eff_GHz=N/A  ");
+            }
+            printf("alerts=%" PRIu64 "  checksum=%" PRIu64 "\n", alerts_block, checksum);
+
+            printf("        cumulative: ");
+            if (cycles_ok) {
+                ULONG64 delta_cycles = cycles_now - cycles_start;
+                printf("cycles/iter=%.2f  ", (double)delta_cycles / (double)cum_iters);
+            } else {
+                printf("cycles/iter=N/A  ");
+            }
+            if (cpu_ok) {
+                ULONGLONG delta_cpu = cpu100ns_now - cpu100ns_start;
+                printf("cpu_ns/iter=%.2f  ", (double)(delta_cpu * 100.0) / (double)cum_iters);
+            } else {
+                printf("cpu_ns/iter=N/A  ");
+            }
+            if (have_qpc) {
+                printf("wall_us/iter=%.2f  ",
+                       ((double)active_ticks_cum * 1000000.0) /
+                       ((double)qpc_freq.QuadPart * (double)cum_iters));
+            } else {
+                printf("wall_us/iter=N/A  ");
+            }
+            if (cycles_ok && cpu_ok && (cpu100ns_now > cpu100ns_start)) {
+                ULONG64 delta_cycles = cycles_now - cycles_start;
+                double cpu_seconds = (double)(cpu100ns_now - cpu100ns_start) * 1e-7;
+                printf("eff_GHz=%.3f  ", (double)delta_cycles / cpu_seconds / 1e9);
+            } else {
+                printf("eff_GHz=N/A  ");
+            }
+            printf("alerts=%" PRIu64 "  checksum=%" PRIu64 "\n", alerts_cum, checksum);
+
+            if (cycles_ok)
+                cycles_block_start = cycles_now;
+            else
+                have_cycles = 0;
+
+            if (cpu_ok)
+                cpu100ns_block_start = cpu100ns_now;
+            else
+                have_cpu_time = 0;
+
+            active_ticks_block = 0;
+            alerts_block_base = alerts_now;
+        }
+    }
+
+    g_bench_sink = checksum;
+    printf("[Bench] done: checksum=%" PRIu64 " sink=%" PRIu64 "\n", checksum, g_bench_sink);
+}
+
 /* ------------------------------------------------------------------------- */
 /* Monitoring: clutch */
 
@@ -734,7 +1003,7 @@ handle_gas(const Options *opt, Runtime *rt, DWORD now, DWORD gas)
                 rt->estimate_window_peak_percent = 0u;
             }
 
-            if (opt->verbose)
+            if (opt->verbose && !opt->bench_mode)
                 printf("Gas: Activity Resumed.\n");
         }
 
@@ -742,7 +1011,7 @@ handle_gas(const Options *opt, Runtime *rt, DWORD now, DWORD gas)
         rt->last_gas_activity_ms = now;
     } else {
         if (rt->is_racing && (now - rt->last_gas_activity_ms > rt->gas_timeout_ms)) {
-            if (opt->verbose)
+            if (opt->verbose && !opt->bench_mode)
                 printf("Gas: Auto-Pause (Idle for %d s).\n", opt->gas_timeout_sec);
 
             rt->is_racing = FALSE;
@@ -833,8 +1102,10 @@ handle_gas_estimator(const Options *opt, Runtime *rt, DWORD now, DWORD gas)
                 rt->gas_deadzone_out_current = (int)rt->best_estimate_percent;
                 runtime_recompute_thresholds(opt, rt);
 
-                printf("[AutoAdjust] gas-deadzone-out updated to %d (min=%d)\n",
-                       rt->gas_deadzone_out_current, opt->auto_gas_deadzone_minimum);
+                if (!opt->bench_mode) {
+                    printf("[AutoAdjust] gas-deadzone-out updated to %d (min=%d)\n",
+                           rt->gas_deadzone_out_current, opt->auto_gas_deadzone_minimum);
+                }
             }
         }
     }
@@ -939,6 +1210,14 @@ runtime_reset_detectors(const Options *opt, Runtime *rt)
 static void
 alert_msg(const Options *opt, const char *text, size_t text_len, int log_to_console)
 {
+    if (opt->bench_mode) {
+        (void)text;
+        (void)text_len;
+        (void)log_to_console;
+        g_bench_alert_counter++;
+        return;
+    }
+
     if (log_to_console) {
         SYSTEMTIME t;
         GetLocalTime(&t);
