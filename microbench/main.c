@@ -243,6 +243,231 @@ For each binary:
 ================================================================================
 */
 
+/* Version 2
+================================================================================
+Deterministic Microbenchmark Mode (--bench) — User Guide (Windows / MSYS2 GCC)
+================================================================================
+
+What this program is
+--------------------
+This program monitors Fanatec ClubSport pedals on Windows and runs drift/noise
+detectors for gas and clutch. It can also speak alerts (TTS).
+
+This file includes a deterministic microbenchmark mode (--bench) designed to
+compare compiler optimization settings (e.g., -O2 vs -O3 vs -Os, with/without
+architecture tuning flags) on the SAME machine under repeatable conditions.
+
+Why microbenchmark mode exists
+------------------------------
+Benchmarking the “real” monitor loop is hard because it normally includes:
+  - joystick I/O (joyGetPosEx)
+  - Sleep delays (polling interval)
+  - alerts/TTS that may block
+  - Windows scheduler jitter (preemption)
+
+--bench mode removes joystick I/O and feeds deterministic synthetic inputs into
+the same monitoring logic so performance differences are mostly due to codegen
+and CPU behavior, not external I/O.
+
+How the benchmark workload works (deterministic)
+------------------------------------------------
+Each iteration generates deterministic gas/clutch values using:
+  - a fixed-seed RNG (LCG)
+  - a phase pattern that forces the logic through meaningful states:
+      * idle-like period
+      * racing-like period
+      * full-throttle bursts
+      * random-ish segments
+
+The same sequence repeats across runs, so comparisons are fair.
+
+IMPORTANT: what you are benchmarking depends on which monitors are enabled.
+- If you run: --bench --monitor-gas --monitor-clutch
+  then handle_gas() and handle_clutch() do real work each iteration.
+- If you omit the monitor flags, those handlers early-return and you mostly
+  benchmark the harness + checksum.
+
+Bench time model (virtual clock) and DT_MS
+------------------------------------------
+The monitoring logic uses time comparisons like (now - last_event_ms).
+In --bench mode we do NOT call GetTickCount() every iteration. Instead we keep a
+virtual clock:
+  virtual_now += bench_dt_ms each iteration
+
+--bench-dt-ms (DT_MS) = how many ms of simulated time pass per iteration.
+Default DT_MS=1 is a good baseline.
+
+Sleep behavior in bench mode (SLEEP_MS)
+---------------------------------------
+Bench mode still calls Sleep(opt->sleep_ms) per iteration so you can test:
+  --sleep 0  -> yield (often fastest overall wall runtime)
+  --sleep 1  -> usually NOT 1ms on Windows (see below)
+
+Windows timer granularity caveat:
+- On many systems, Sleep(1) sleeps ~15.6ms by default because the system timer
+  tick is ~15.625ms unless something else changes timer resolution.
+- That means Sleep(1) can make a 1,000,000-iteration run take hours.
+- This does NOT “break” the benchmark metrics, but it changes system behavior
+  (CPU downclocking, cache cooling, scheduling) and makes the run take far longer.
+
+Recommended for compiler comparisons:
+  Use --sleep 0 (hot-loop throughput), and use repeats (RUNS_PER_EXE) for stability.
+
+Three measurement sources (what each column means)
+--------------------------------------------------
+
+(1) cycles/iter  (QueryThreadCycleTime)  [PRIMARY]
+- Source:
+    QueryThreadCycleTime(GetCurrentThread(), &cycles)
+- Meaning:
+    CPU cycles consumed by THIS THREAD while doing the benchmark work.
+- Interpretation:
+    LOWER is better.
+    Fewer cycles to do the same deterministic work => more efficient codegen.
+- Why it’s the best primary signal:
+    It largely ignores "not scheduled" time and is high resolution.
+
+(2) cpu_ns/iter  (GetThreadTimes)  [SECONDARY / OFTEN COARSE]
+- Source:
+    GetThreadTimes(GetCurrentThread(), ..., &kernel, &user)
+    FILETIME units are 100ns; cpu_ns = cpu_100ns * 100.
+- Meaning:
+    CPU time actually consumed by this thread (kernel+user), in nanoseconds.
+    This excludes time when the thread was not scheduled.
+- Caveat (VERY IMPORTANT):
+    Even though FILETIME is “100ns units”, Windows updates these counters in
+    coarse chunks. In fast hot loops, a block may be so short that the delta is 0.
+    That’s why cpu_ns/iter (and min_block_cpu_ns) can show 0.00 frequently.
+- Fix if you want meaningful cpu_ns/iter:
+    Increase --bench-report-every to ~50000 or 100000 so each block is long
+    enough for GetThreadTimes to advance.
+
+(3) wall_us/iter  (QPC active wall time)  [SANITY CHECK]
+- Source:
+    QueryPerformanceCounter / QueryPerformanceFrequency (high resolution).
+- Meaning:
+    Wall time spent ONLY in the active work region, per iteration, in microseconds.
+- Critical design detail:
+    The QPC timer is PAUSED during:
+      - Sleep()
+      - report printing
+    So wall_us/iter excludes sleep time and printing time.
+- Caveat:
+    Wall time can still include time lost to preemption/interrupts during the
+    active work region. That’s why cycles/iter remains the primary metric.
+
+Derived: eff_GHz  (diagnostic)
+------------------------------
+eff_GHz estimates effective frequency while running this thread:
+  eff_GHz ≈ cycles / cpu_seconds / 1e9
+It is computed from cycles + GetThreadTimes deltas.
+- Interpretation: diagnostic only (frequency stability).
+- Caveat: if cpu time deltas are 0, eff_GHz becomes N/A or unstable.
+- If eff_GHz is stable across runs, cpu_ns/iter comparisons become more meaningful.
+
+Block reports vs cumulative reports
+-----------------------------------
+The program prints reports every --bench-report-every iterations (a "block"),
+plus the final partial block if needed.
+
+Each report prints:
+  [Bench] iter=...  block: ... best: ... alerts=... checksum=...
+          cumulative: ...
+
+BLOCK line = rolling window (last block only):
+  cycles/iter      average cycles per iteration over this block
+  cpu_ns/iter      average thread CPU ns per iteration over this block (may be 0)
+  wall_us/iter     average active wall us per iteration over this block
+  eff_GHz          diagnostic frequency estimate for this block (may be N/A)
+  best:            best-so-far "min_*" fields (see below)
+  alerts           number of alerts triggered in this block (alerts are suppressed in bench)
+  checksum         running checksum to prevent dead-code elimination
+
+CUMULATIVE line = from the start of measured phase:
+  cycles/iter      computed from sum of clean block deltas / total measured iters
+  cpu_ns/iter      computed from sum of clean block cpu deltas / total measured iters
+  wall_us/iter     computed from total active wall ticks / total measured iters
+  eff_GHz          computed from cumulative cycles + cumulative cpu time
+Important:
+  Cumulative cycles/cpu are built from per-block deltas measured BEFORE printing,
+  so printing overhead does not contaminate them.
+
+What “blocks” are (and why min_block_* is NOT a per-iteration minimum)
+----------------------------------------------------------------------
+A “block” is REPORT_EVERY iterations (e.g., 1000). For each block, we compute an
+AVERAGE cost per iteration across the entire block:
+  block_avg = (cost over the whole block) / (iters in the block)
+
+Then min_block_* means:
+  "the minimum (best) block-average seen so far across all blocks"
+
+It is NOT:
+  "the minimum single iteration inside the block"
+
+This is intentional:
+- Single-iteration minima are often “lottery ticket” events.
+- A block-average minimum means performance was good for MANY iterations in a row.
+
+Min fields (“best so far”) explained
+------------------------------------
+min_block_cycles:
+  Lowest block-average cycles/iter observed so far.
+  Best sustained (block-length) CPU efficiency moment.
+  Lower is better.
+
+min_block_wall_us:
+  Lowest block-average wall_us/iter observed so far.
+  Best sustained active wall-time moment (excluding Sleep + printing).
+  Lower is better.
+
+min_block_cpu_ns:
+  Lowest block-average cpu_ns/iter observed so far.
+  Often 0 in fast runs due to GetThreadTimes granularity.
+  Only meaningful when cpu_ns/iter is consistently non-zero (use bigger blocks).
+
+min_iter_wall_us:
+  Lowest single-iteration active wall time observed so far.
+  This is the absolute fastest observed iteration, but it can be “lottery ticket-ish”
+  (perfect cache moment, lucky path). Good as a theoretical lower bound, not as a
+  primary winner selector.
+
+Final summary footer ([BenchSummary])
+-------------------------------------
+At the end the program prints [BenchSummary] lines:
+  - mean      = cumulative average over the whole measured run
+  - median    = median of the per-block averages (robust vs outliers)
+  - min_block = best sustained block-average observed
+  - min_iter_wall_us (for wall) = best single-iteration lower bound
+
+How to pick the best compiler flags
+-----------------------------------
+Recommended ranking criteria:
+1) Primary: lowest median cycles/iter
+2) Secondary sanity check: lowest median wall_us/iter
+3) “Best sustained moment” (optional): lowest min_block_cycles, then min_block_wall_us
+4) Ignore cpu_ns/iter and min_block_cpu_ns unless you increase report interval enough
+   that cpu deltas are consistently non-zero.
+
+Run discipline (how to make comparisons fair)
+---------------------------------------------
+- Keep all benchmark args identical across builds:
+    --sleep, --bench-iters, --bench-warmup, --bench-report-every, --bench-dt-ms
+- Pin to one core (affinity mask) to avoid core hopping.
+- Run multiple repeats per build (e.g., 5 or 10) and compare medians.
+- Reduce console overhead by increasing --bench-report-every (e.g., 10000) once stable.
+- For fast hot-loop comparisons, prefer --sleep 0.
+
+Typical recommended command line:
+  fanatecmonitor.exe --bench --monitor-gas --monitor-clutch --sleep 0 ^
+    --bench-iters 1000000 --bench-warmup 100000 --bench-report-every 1000 ^
+    --bench-dt-ms 1 --affinitymask 0x04000000 --no-console-banner
+
+If you want cpu_ns/iter and eff_GHz to become meaningful:
+  increase --bench-report-every to 50000 or 100000.
+
+================================================================================
+*/
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
