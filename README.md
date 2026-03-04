@@ -206,22 +206,12 @@ If you run the program without enough information to identify a device, it will 
 
 ---
 
-## Typical launch examples
+## Typical launch examples (affinitymask valid only on a 14700K, remove it if different)
 
 ### Flight sim: clutch as rudder + gas drift monitoring (raw Fanatec input)
 
 ```bash
-fanatecmonitor.exe ^
-  --monitor-clutch --monitor-gas ^
-  --joystick 1 ^
-  --flags 266 ^
-  --iterations 90000 ^
-  --sleep 1000 ^
-  --margin 1 ^
-  --gas-deadzone-in 5 --gas-deadzone-out 93 ^
-  --gas-window 30 --gas-timeout 10 --gas-cooldown 60 --gas-min-usage 20 ^
-  --vendor-id 0EB7 --product-id 1839 ^
-  --idle --affinitymask 983040
+fanatecmonitor.exe" --vendor-id 0EB7 --product-id 1839 --flags 266 --iterations 0 --idle --affinitymask 268369920 --margin 1 --monitor-clutch
 ```
 
 Notes:
@@ -230,41 +220,10 @@ Notes:
 * `--iterations 90000` with `--sleep 1000` is about 25 hours (close to the intended limit).
 * `--idle` + `--affinitymask ...` keeps the monitor low-impact.
 
-### Racing: drift calibration + estimation
+### Racing: drift calibration + estimation + audo-adjust (notice the shorcuts)
 
 ```bash
-fanatecmonitor.exe ^
-  --monitor-gas ^
-  --joystick 1 ^
-  --flags 266 ^
-  --iterations 0 ^
-  --sleep 1000 ^
-  --gas-deadzone-in 5 ^
-  --gas-deadzone-out 93 ^
-  --gas-window 30 ^
-  --gas-timeout 10 ^
-  --gas-cooldown 60 ^
-  --gas-min-usage 20 ^
-  --estimate-gas-deadzone-out
-```
-
-### Calibration session with auto-adjust
-
-```bash
-fanatecmonitor.exe ^
-  --monitor-gas ^
-  --joystick 1 ^
-  --flags 266 ^
-  --iterations 0 ^
-  --sleep 1000 ^
-  --gas-deadzone-in 5 ^
-  --gas-deadzone-out 93 ^
-  --gas-window 30 ^
-  --gas-timeout 10 ^
-  --gas-cooldown 60 ^
-  --gas-min-usage 20 ^
-  --estimate-gas-deadzone-out ^
-  --adjust-deadzone-out-with-minimum 90
+fanatecmonitor.exe" --ven 0EB7 --prod 1839 -f 266 -i 0 --idle --aff 268369920 --monitor-gas --gas-deadzone-out 100 --estimate-gas-deadzone-out  --gas-min-usage 60 -s 100  --adjust-deadzone-out-with-minimum 80
 ```
 
 ---
@@ -416,3 +375,4 @@ fanatecmonitor.exe ^
 See the `LICENSE` file in this repository for licensing details.
 
 ---
+
