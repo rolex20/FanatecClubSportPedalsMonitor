@@ -4,7 +4,6 @@ param(
     [string]$Path = 'results.txt'
 )
 
-# Keep it simple and robust for PS 5.1
 $ErrorActionPreference = 'Stop'
 
 function ToNumber([string]$s) {
@@ -15,23 +14,31 @@ function ToNumber([string]$s) {
     try { return [double]$v } catch { return $null }
 }
 
+function ToInt64([string]$s) {
+    if ([string]::IsNullOrWhiteSpace($s)) { return $null }
+    $v = $s.Trim()
+    if ($v -eq 'N/A') { return $null }
+    try { return [int64]$v } catch { return $null }
+}
+
+function ToUInt64([string]$s) {
+    if ([string]::IsNullOrWhiteSpace($s)) { return $null }
+    $v = $s.Trim()
+    if ($v -eq 'N/A') { return $null }
+    try { return [uint64]$v } catch { return $null }
+}
+
 function GetMedian($values) {
-    # Always treat input as list
     $arr = @()
     foreach ($v in @($values)) {
         if ($null -ne $v) { $arr += [double]$v }
     }
     if ($arr.Count -eq 0) { return $null }
-
     $sorted = $arr | Sort-Object
     $n = $sorted.Count
-    if (($n % 2) -eq 1) {
-        return $sorted[[int]($n/2)]
-    } else {
-        $hi = [int]($n/2)
-        $lo = $hi - 1
-        return ($sorted[$lo] + $sorted[$hi]) / 2.0
-    }
+    if (($n % 2) -eq 1) { return $sorted[[int]($n/2)] }
+    $hi = [int]($n/2); $lo = $hi - 1
+    return ($sorted[$lo] + $sorted[$hi]) / 2.0
 }
 
 function GetMin($values) {
@@ -48,20 +55,22 @@ function GetArch([string]$march, [string]$mtune) {
     $t = if ([string]::IsNullOrWhiteSpace($mtune)) { 'none' } else { $mtune }
     if ($m -eq 'none' -and $t -eq 'none') { return 'none' }
     if ($m -eq $t) { return $m }
-    return "$m/$t"  # shouldn't happen with your paired rule, but stays robust
+    return "$m/$t"
 }
 
 if (-not (Test-Path -LiteralPath $Path)) {
     throw "File not found: $Path"
 }
 
-# Match your markers + summary lines
+# Markers + summary lines
 $rxRun   = '^===RUN===\s+exe=(\S+)\s+O=(\S+)\s+march=(\S+)\s+mtune=(\S+)\s+run=(\S+)'
 $rxHdr   = '^\[BenchSummary\]\s+iters=(\d+)\s+blocks=(\d+)\s+sleep_ms=(\d+)\s+dt_ms=(\d+)\s+report_every=(\d+)'
 $rxCyc   = '^\[BenchSummary\]\s+cycles/iter:\s+mean=(\S+)\s+median=(\S+)\s+min_block=(\S+)'
 $rxCpu   = '^\[BenchSummary\]\s+cpu_ns/iter:\s+mean=(\S+)\s+median=(\S+)\s+min_block=(\S+)'
 $rxWall  = '^\[BenchSummary\]\s+wall_us/iter:\s+mean=(\S+)\s+median=(\S+)\s+min_block=(\S+)\s+min_iter_wall_us=(\S+)'
 $rxEff   = '^\[BenchSummary\]\s+eff_GHz:\s+mean=(\S+)\s+median=(\S+)\s+min_block=(\S+)'
+# NEW: raw min-tick stats line
+$rxWallIterMin = '^\[BenchSummary\]\s+wall_iter_min:\s+min_iter_wall_ticks=(\S+)\s+min_iter_wall_ticks_count=(\S+)\s+min_iter_wall_ticks_pct=(\S+)\s+qpc_freq=(\S+)'
 
 $runs = @()
 $current = $null
@@ -80,13 +89,18 @@ foreach ($line in Get-Content -LiteralPath $Path) {
 
         $current = [pscustomobject]@{
             Exe=$exe; O=$o; March=$march; Mtune=$mtune; Arch=$arch; RunIndex=$runIx
-
             Iters=$null; Blocks=$null; SleepMs=$null; DtMs=$null; ReportEvery=$null
 
             CyclesMean=$null;   CyclesMedian=$null;   CyclesMinBlock=$null
             CpuMeanNs=$null;    CpuMedianNs=$null;    CpuMinBlockNs=$null
             WallMeanUs=$null;   WallMedianUs=$null;   WallMinBlockUs=$null; WallMinIterUs=$null
             EffMeanGhz=$null;   EffMedianGhz=$null;   EffMinBlockGhz=$null
+
+            # NEW: per-run min-iteration tick diagnostics
+            MinIterWallTicks=$null
+            MinIterWallTicksCount=$null
+            MinIterWallTicksPct=$null
+            QpcFreq=$null
         }
         continue
     }
@@ -130,6 +144,14 @@ foreach ($line in Get-Content -LiteralPath $Path) {
         $current.EffMinBlockGhz = ToNumber $matches[3]
         continue
     }
+
+    if ($line -match $rxWallIterMin) {
+        $current.MinIterWallTicks      = ToInt64  $matches[1]
+        $current.MinIterWallTicksCount = ToUInt64 $matches[2]
+        $current.MinIterWallTicksPct   = ToNumber $matches[3]
+        $current.QpcFreq               = ToInt64  $matches[4]
+        continue
+    }
 }
 
 if ($null -ne $current) { $runs += $current }
@@ -151,10 +173,14 @@ foreach ($g in $groups) {
     $cpuMed    = GetMedian ($items | ForEach-Object { $_.CpuMedianNs })
     $effMed    = GetMedian ($items | ForEach-Object { $_.EffMedianGhz })
 
-    # "Best sustained block" across runs: min of run-level min_block (best seen in any run)
+    # Best sustained block across runs
     $minBlockCycles = GetMin ($items | ForEach-Object { $_.CyclesMinBlock })
     $minBlockWall   = GetMin ($items | ForEach-Object { $_.WallMinBlockUs })
     $minBlockCpu    = GetMin ($items | ForEach-Object { $_.CpuMinBlockNs })
+
+    # NEW: tie-breaker stats (median across runs)
+    $minIterTicksMed = GetMedian ($items | ForEach-Object { $_.MinIterWallTicks })
+    $minIterPctMed   = GetMedian ($items | ForEach-Object { $_.MinIterWallTicksPct })
 
     $agg += [pscustomobject]@{
         O=$first.O
@@ -169,6 +195,9 @@ foreach ($g in $groups) {
         MinBlockCycles=$minBlockCycles
         MinBlockWallUs=$minBlockWall
         MinBlockCpuNs=$minBlockCpu
+
+        MinIterWallTicksMedian=$minIterTicksMed
+        MinIterWallTicksPctMedian=$minIterPctMed
     }
 }
 
@@ -184,12 +213,12 @@ function PickWinner($items, $prop, [switch]$RequirePositive) {
     return @($cand | Sort-Object -Property $prop, O, Arch)[0]
 }
 
-# Primary/secondary winners (medians)
+# Primary winners (medians)
 $wCycles = PickWinner $agg 'CyclesMedian'
 $wWall   = PickWinner $agg 'WallMedianUs'
-$wCpu    = PickWinner $agg 'CpuMedianNs' -RequirePositive   # avoids "winner = 0"
+$wCpu    = PickWinner $agg 'CpuMedianNs' -RequirePositive
 
-# Best sustained block winners (min_block_*)
+# Best sustained block winners
 $wMinBlkCycles = PickWinner $agg 'MinBlockCycles'
 $wMinBlkWall   = PickWinner $agg 'MinBlockWallUs'
 $wMinBlkCpu    = PickWinner $agg 'MinBlockCpuNs' -RequirePositive
@@ -213,10 +242,33 @@ if ($wMinBlkWall)   { Write-Host ("  * Best sustained block wall_us : O={0} arch
 if ($wMinBlkCpu)    { Write-Host ("  * Best sustained block cpu_ns  : O={0} arch={1} min_block_cpu_ns={2}" -f $wMinBlkCpu.O,    $wMinBlkCpu.Arch,    $wMinBlkCpu.MinBlockCpuNs) }
 else                { Write-Host ("  * min_block_cpu_ns winner: N/A (often 0 unless REPORT_EVERY is much larger)") }
 
+# Tie-breaker category: "floor then frequency"
+Write-Host ""
+Write-Host "Tie-breaker stats (per-build medians): min_iter_wall_ticks (lower better), then min_iter_wall_ticks_pct (higher better)"
+$agg |
+    Where-Object { $null -ne $_.MinIterWallTicksMedian -and $null -ne $_.MinIterWallTicksPctMedian } |
+    Sort-Object MinIterWallTicksMedian, @{Expression='MinIterWallTicksPctMedian';Descending=$true}, O, Arch |
+    Format-Table O, Arch, Runs, MinIterWallTicksMedian, MinIterWallTicksPctMedian -AutoSize
+
+# Tie-breaker winner: smallest floor, then highest pct among those at that floor
+$tbCandidates = @(
+    $agg | Where-Object { $null -ne $_.MinIterWallTicksMedian -and $null -ne $_.MinIterWallTicksPctMedian }
+)
+if ($tbCandidates.Count -gt 0) {
+    $minFloor = ($tbCandidates | Measure-Object -Property MinIterWallTicksMedian -Minimum).Minimum
+    $floorGroup = @($tbCandidates | Where-Object { $_.MinIterWallTicksMedian -eq $minFloor })
+    $tbWinner = @($floorGroup | Sort-Object -Property @{Expression='MinIterWallTicksPctMedian';Descending=$true}, O, Arch)[0]
+    Write-Host ""
+    Write-Host ("Tie-breaker winner (lowest floor then highest pct): O={0} arch={1} floor_ticks_med={2} floor_pct_med={3}" -f `
+        $tbWinner.O, $tbWinner.Arch, $tbWinner.MinIterWallTicksMedian, $tbWinner.MinIterWallTicksPctMedian)
+} else {
+    Write-Host ""
+    Write-Host "Tie-breaker winner: N/A (no wall_iter_min lines parsed)"
+}
+
 Write-Host ""
 Write-Host "Notes:"
 Write-Host "  - Prefer median cycles/iter as the main compiler/flags winner."
-Write-Host "  - median wall_us/iter is a useful sanity check (scheduler noise)."
-Write-Host "  - min_block_* are 'best sustained moments' (best block-average observed)."
-Write-Host "  - cpu_ns/iter and min_block_cpu_ns can be 0 in fast runs; increase REPORT_EVERY to ~50000-100000 if you want those."
+Write-Host "  - Use tie-breaker only when cycles medians are effectively tied."
+Write-Host "  - If floor_ticks is 0 for many builds, per-iteration QPC is below resolution; rely on cycles/iter + block metrics."
 exit 0
