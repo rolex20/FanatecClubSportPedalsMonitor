@@ -1,0 +1,137 @@
+{
+    "version": "2.0.0",
+    "tasks":[
+        {
+            "label": "Build: Gracemont (Release -O2)",
+            "type": "process",
+            "command": "C:/msys64/ucrt64/bin/gcc.exe",
+            "args":[
+                "-O2",
+                "-s",
+                "-m64",
+                "-march=gracemont",
+                "-mtune=gracemont",
+                "-std=c11",
+                "${workspaceFolder}\\*.c",
+                "-o",
+                "${workspaceFolder}\\fanatecmonitor_GracemontO2.exe",
+                "-lwinmm"
+            ],
+            "options": {
+                "cwd": "C:/msys64/ucrt64/bin"
+            },			
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": ["$gcc"]
+        },
+        {
+            "label": "Build: RaptorLake (Release -O2)",
+            "type": "process",
+            "command": "C:/msys64/ucrt64/bin/gcc.exe",
+            "args":[
+                "-O2",
+                "-s",
+                "-m64",
+                "-march=raptorlake",
+                "-std=c11",
+                "${workspaceFolder}\\*.c",
+                "-o",
+                "${workspaceFolder}\\fanatecmonitor_RaptorLakeO2.exe",
+                "-lwinmm"
+            ],
+            "options": {
+                "cwd": "C:/msys64/ucrt64/bin"
+            },			
+            "group": "build",
+            "problemMatcher": ["$gcc"]
+        },
+        {
+            "label": "Build: Generic -O2 x64 (Release)",
+            "type": "process",
+            "command": "C:/msys64/ucrt64/bin/gcc.exe",
+            "args":[
+                "-O2",
+                "-s",
+                "-m64",
+                "-Wall",
+                "-Wextra",
+                "-std=c11",
+                "${workspaceFolder}\\*.c",
+                "-o",
+                "${workspaceFolder}\\fanatecmonitor_ReleaseO2.exe",
+                "-lwinmm"
+            ],
+            "options": {
+                "cwd": "C:/msys64/ucrt64/bin"
+            },			
+            "group": "build",
+            "problemMatcher": ["$gcc"]
+        },
+        {
+            "label": "Build: MinSize -Os x64 (Release)",
+            "type": "process",
+            "command": "C:/msys64/ucrt64/bin/gcc.exe",
+            "args":[
+                "-Os",
+                "-s",
+                "-m64",
+                "-Wall",
+                "-Wextra",
+                "-std=c11",
+                "${workspaceFolder}\\*.c",
+                "-o",
+                "${workspaceFolder}\\fanatecmonitor_ReleaseOs.exe",
+                "-lwinmm"
+            ],
+            "options": {
+                "cwd": "C:/msys64/ucrt64/bin"
+            },			
+            "group": "build",
+            "problemMatcher": ["$gcc"]
+        },        
+        {
+            "label": "Build: Debug",
+            "type": "process",
+            "command": "C:/msys64/ucrt64/bin/gcc.exe",
+            "args":[
+                "-g",
+                "-O0",
+                "-Wall",
+                "-Wextra",
+                "-m64",
+                "-std=c11",
+                "${workspaceFolder}\\*.c",
+                "-o",
+                "${workspaceFolder}\\fanatecmonitor_Debug.exe",
+                "-lwinmm"
+            ],
+            "options": {
+                "cwd": "C:/msys64/ucrt64/bin"
+            },			
+            "group": "build",
+            "problemMatcher": ["$gcc"]
+        },
+        {
+            "label": "copy-to-downloads",
+            "type": "shell",
+            "command": "powershell",
+            "args":[
+                "-NoProfile",
+                "-Command",
+                "Copy-Item -Path '${workspaceFolder}\\*.exe', '${workspaceFolder}\\*.ps1' -Destination 'C:\\users\\ralch\\downloads' -Force"
+            ],
+            "problemMatcher":[]
+        },
+        {
+            "label": "Build Gracemont AND Copy to Downloads",
+            "dependsOrder": "sequence",
+            "dependsOn":[
+                "Build: Gracemont (Release)",
+                "copy-to-downloads"
+            ],
+            "problemMatcher":[]
+        }
+    ]
+}
