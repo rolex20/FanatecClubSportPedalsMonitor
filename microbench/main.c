@@ -1148,12 +1148,13 @@ run_bench_loop(Options *opt)
     int have_min_block_cpu_ns = 0;
     int have_min_block_wall_us = 0;
     int have_min_block_eff_ghz = 0;
-    int have_min_iter_wall_us = 0;
+    int have_min_iter_wall_ticks = 0;
     double min_block_cycles_per_iter_so_far = 0.0;
     double min_block_cpu_ns_per_iter_so_far = 0.0;
     double min_block_wall_us_per_iter_so_far = 0.0;
     double min_block_eff_ghz_so_far = 0.0;
-    double min_iter_wall_us_so_far = 0.0;
+    LONGLONG min_iter_wall_ticks = 0;
+    unsigned long long min_iter_wall_ticks_count = 0u;
 
     unsigned long long block_capacity_ull;
     size_t block_capacity = 0u;
@@ -1242,12 +1243,19 @@ run_bench_loop(Options *opt)
             int refresh_baselines_after_report = 0;
 
             LONGLONG iter_wall_ticks = bench_qpc_timer_pause(&wall_timer);
+            if (iter_wall_ticks < 0)
+                iter_wall_ticks = 0;
+
             if (wall_timer.have_qpc) {
-                double iter_wall_us =
-                    ((double)iter_wall_ticks * 1000000.0) / (double)wall_timer.freq.QuadPart;
-                if (!have_min_iter_wall_us || iter_wall_us < min_iter_wall_us_so_far) {
-                    min_iter_wall_us_so_far = iter_wall_us;
-                    have_min_iter_wall_us = 1;
+                if (!have_min_iter_wall_ticks) {
+                    min_iter_wall_ticks = iter_wall_ticks;
+                    min_iter_wall_ticks_count = 1u;
+                    have_min_iter_wall_ticks = 1;
+                } else if (iter_wall_ticks < min_iter_wall_ticks) {
+                    min_iter_wall_ticks = iter_wall_ticks;
+                    min_iter_wall_ticks_count = 1u;
+                } else if (iter_wall_ticks == min_iter_wall_ticks) {
+                    min_iter_wall_ticks_count++;
                 }
             }
 
@@ -1385,8 +1393,10 @@ run_bench_loop(Options *opt)
                 else
                     printf(" min_block_wall_us=N/A");
 
-                if (have_min_iter_wall_us)
-                    printf(" min_iter_wall_us=%.3f", min_iter_wall_us_so_far);
+                if (have_min_iter_wall_ticks)
+                    printf(" min_iter_wall_us=%.6f",
+                           ((double)min_iter_wall_ticks * 1000000.0) /
+                           (double)wall_timer.freq.QuadPart);
                 else
                     printf(" min_iter_wall_us=N/A");
 
@@ -1552,8 +1562,35 @@ run_bench_loop(Options *opt)
         else
             printf("N/A");
         printf(" min_iter_wall_us=");
-        if (have_min_iter_wall_us)
-            printf("%.3f\n", min_iter_wall_us_so_far);
+        if (have_min_iter_wall_ticks)
+            printf("%.6f\n",
+                   ((double)min_iter_wall_ticks * 1000000.0) /
+                   (double)wall_timer.freq.QuadPart);
+        else
+            printf("N/A\n");
+
+        printf("[BenchSummary] wall_iter_min: min_iter_wall_ticks=");
+        if (have_min_iter_wall_ticks)
+            printf("%lld", (long long)min_iter_wall_ticks);
+        else
+            printf("N/A");
+
+        printf(" min_iter_wall_ticks_count=");
+        if (have_min_iter_wall_ticks)
+            printf("%llu", min_iter_wall_ticks_count);
+        else
+            printf("N/A");
+
+        printf(" min_iter_wall_ticks_pct=");
+        if (have_min_iter_wall_ticks && measured_done > 0u) {
+            printf("%.6f", (100.0 * (double)min_iter_wall_ticks_count) / (double)measured_done);
+        } else {
+            printf("N/A");
+        }
+
+        printf(" qpc_freq=");
+        if (wall_timer.have_qpc)
+            printf("%lld\n", (long long)wall_timer.freq.QuadPart);
         else
             printf("N/A\n");
 
