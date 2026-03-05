@@ -20,6 +20,10 @@ Key goals:
       * Thread CPU time (GetThreadTimes) — time-in-ns the thread actually ran
       * QPC wall time (QueryPerformanceCounter) — active wall time excluding Sleep
   - Alerts are “cheap” in bench mode (only counted, not spoken/printed/spawned).
+  - Per-iteration wall-time deltas can be 0 QPC ticks on very fast machines when
+    active work is shorter than timer resolution.
+  - --bench-alert-work adds deterministic CPU-only alert-formatting payload work
+    so single-iteration QPC deltas are easier to measure.
 
 Quick start (recommended commands)
 ----------------------------------
@@ -55,6 +59,12 @@ Benchmark configuration knobs
 
 --bench-report-every N (default 1000)
   Print a report every N measured iterations. The last partial block prints too.
+
+--bench-alert-work N (default 1 in --bench mode)
+  Per benchmark iteration, runs N repetitions of a deterministic CPU-only
+  “alert formatting payload” (template memcpy + fixed-width digit patch + tiny mix).
+  This does not call OS/I/O alert paths and does not increment alert-trigger counters.
+  Set N=0 to benchmark pure detector workload with no forced alert-formatting work.
 
 --sleep MS
   Bench still calls Sleep(MS) each iteration so you can test yield behavior:
@@ -184,6 +194,18 @@ IMPORTANT:
   - Cumulative cycles/iter and cpu_ns/iter are derived from summed block deltas,
     so report printing overhead does not contaminate them.
 
+Why min_iter_wall_ticks can be 0 (and why --bench-alert-work exists)
+---------------------------------------------------------------
+On fast CPUs, a single benchmark iteration can finish before one QPC tick elapses,
+so raw per-iteration wall deltas may frequently be 0 ticks. This is expected and is
+now explicitly tracked by min_iter_wall_ticks and its count/percent fields.
+
+The --bench-alert-work knob exists to make single-iteration wall timing more
+meaningful while keeping runs deterministic: it adds a tiny CPU-only payload
+(buffer copy + digit patching + deterministic mixing) inside the measured region,
+without GetLocalTime/printing/IPC/CreateProcess/Wait activity and without changing
+real detector-triggered alert counter semantics.
+
 Final summary footer ([BenchSummary])
 -------------------------------------
 At the end of the run, the program prints summary stats:
@@ -292,6 +314,7 @@ typedef struct Options {
     unsigned bench_warmup;
     unsigned bench_dt_ms;
     unsigned bench_report_every;
+    unsigned bench_alert_work;
 
     /* Clutch tuning */
     unsigned margin_percent;     /* 0..100 */
@@ -396,6 +419,7 @@ static void runtime_recompute_thresholds(const Options *opt, Runtime *rt);
 static void runtime_reset_detectors(const Options *opt, Runtime *rt);
 
 static uint32_t bench_lcg_next(uint32_t *state);
+static void bench_alert_payload(uint32_t iter_index, unsigned work_index, uint64_t *checksum);
 static void bench_step(const Options *opt, Runtime *rt, DWORD now, uint32_t iter_index,
                        uint32_t *rng_state, uint64_t *checksum);
 static ULONGLONG filetime_to_u64(const FILETIME *ft);
@@ -479,6 +503,7 @@ options_set_defaults(Options *opt)
     opt->bench_warmup = 200000u;
     opt->bench_dt_ms = 1u;
     opt->bench_report_every = 1000u;
+    opt->bench_alert_work = 1u;
 
     opt->margin_percent = 5;
     opt->clutch_repeat_required = 4;
@@ -538,6 +563,7 @@ show_help_and_exit(void)
     puts("    --bench-warmup N        Warmup iterations; default 200000.");
     puts("    --bench-dt-ms N         Virtual dt in ms; default 1.");
     puts("    --bench-report-every N  Report interval; default 1000.\n");
+    puts("    --bench-alert-work N    Per-iteration alert-format payload reps; default 1 in --bench.\n");
 
     puts("  Priority/Affinity:");
     puts("    --idle                  Set IDLE priority.");
@@ -571,7 +597,8 @@ parse_args(int argc, char **argv, Options *opt)
         OPT_BENCH_ITERS,
         OPT_BENCH_WARMUP,
         OPT_BENCH_DT_MS,
-        OPT_BENCH_REPORT_EVERY
+        OPT_BENCH_REPORT_EVERY,
+        OPT_BENCH_ALERT_WORK
     };
 
     while (1) {
@@ -599,6 +626,7 @@ parse_args(int argc, char **argv, Options *opt)
             {"bench-warmup",              required_argument, 0, OPT_BENCH_WARMUP},
             {"bench-dt-ms",               required_argument, 0, OPT_BENCH_DT_MS},
             {"bench-report-every",        required_argument, 0, OPT_BENCH_REPORT_EVERY},
+            {"bench-alert-work",          required_argument, 0, OPT_BENCH_ALERT_WORK},
 
             {"idle",                      no_argument,       0, 'd'},
             {"belownormal",               no_argument,       0, 'b'},
@@ -727,6 +755,14 @@ parse_args(int argc, char **argv, Options *opt)
 
         case OPT_BENCH_REPORT_EVERY:
             opt->bench_report_every = (unsigned)strtoul(optarg, NULL, 10);
+            break;
+
+        case OPT_BENCH_ALERT_WORK:
+            if (optarg[0] == '-') {
+                fprintf(stderr, "Error: bench-alert-work must be >= 0.\n");
+                exit(EXIT_FAILURE);
+            }
+            opt->bench_alert_work = (unsigned)strtoul(optarg, NULL, 10);
             break;
 
         case '?':
@@ -918,6 +954,36 @@ bench_lcg_next(uint32_t *state)
 {
     *state = (*state * 1664525u) + 1013904223u;
     return *state;
+}
+
+static void
+bench_alert_payload(uint32_t iter_index, unsigned work_index, uint64_t *checksum)
+{
+    static const char template_msg[] = "Bench alert payload #**********";
+    char msg[sizeof(template_msg)];
+    char *last_digit;
+    size_t digit_span;
+    uint32_t deterministic_value;
+
+    memcpy(msg, template_msg, sizeof(template_msg));
+
+    deterministic_value =
+        (uint32_t)(((uint64_t)iter_index * 2654435761u) +
+                   ((uint64_t)work_index * 2246822519u) +
+                   0x9E3779B9u);
+
+    last_digit = &msg[sizeof(msg) - 2u];
+    digit_span = (size_t)((last_digit - msg) + 1u);
+    append_digits_from_right(deterministic_value, '#', last_digit, digit_span);
+
+    {
+        uint64_t mix = *checksum ^ 0xA0761D6478BD642FULL;
+        for (size_t i = 0; i + 1u < sizeof(msg); ++i)
+            mix = (mix * 1099511628211ULL) ^ (uint64_t)(unsigned char)msg[i];
+
+        *checksum ^= mix + ((*checksum << 7) | (*checksum >> 57));
+        g_bench_checksum_sink ^= (ULONGLONG)mix;
+    }
 }
 
 static void
@@ -1207,12 +1273,14 @@ run_bench_loop(Options *opt)
     g_bench_alert_count = 0u;
     g_bench_checksum_sink = 0u;
 
-    printf("[Bench] warmup=%u measure=%u dt_ms=%u report_every=%u sleep_ms=%u\n",
+    printf("[Bench] warmup=%u measure=%u dt_ms=%u report_every=%u sleep_ms=%u bench_alert_work=%u\n",
            opt->bench_warmup, opt->bench_iters, opt->bench_dt_ms,
-           opt->bench_report_every, opt->sleep_ms);
+           opt->bench_report_every, opt->sleep_ms, opt->bench_alert_work);
 
     for (unsigned i = 0; i < opt->bench_warmup; ++i) {
         bench_step(opt, &rt, virtual_now, iter_index, &rng_state, &checksum);
+        for (unsigned w = 0; w < opt->bench_alert_work; ++w)
+            bench_alert_payload(iter_index, w, &checksum);
         iter_index++;
         virtual_now += (DWORD)opt->bench_dt_ms;
         Sleep(opt->sleep_ms);
@@ -1231,6 +1299,8 @@ run_bench_loop(Options *opt)
 
     for (unsigned i = 0; i < opt->bench_iters; ++i) {
         bench_step(opt, &rt, virtual_now, iter_index, &rng_state, &checksum);
+        for (unsigned w = 0; w < opt->bench_alert_work; ++w)
+            bench_alert_payload(iter_index, w, &checksum);
         iter_index++;
 
         virtual_now += (DWORD)opt->bench_dt_ms;
