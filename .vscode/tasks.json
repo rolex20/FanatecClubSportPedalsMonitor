@@ -120,17 +120,25 @@
             "args":[
                 "-NoProfile",
                 "-Command",
-                "Copy-Item -Path '${workspaceFolder}\\*.exe', '${workspaceFolder}\\*.ps1' -Destination 'C:\\users\\ralch\\downloads' -Force"
+                "Copy-Item -Path '${workspaceFolder}\\build\\*.exe' -Destination 'C:\\users\\ralch\\downloads' -Force"
             ],
             "problemMatcher":[]
         },
         {
-            "label": "Build Gracemont AND Copy to Downloads",
+            "label": "Build All AND Copy to Downloads",
             "dependsOrder": "sequence",
             "dependsOn":[
-                "Build: Gracemont (Release)",
+                "Build: Gracemont (Release -O2)",
+                "Build: RaptorLake (Release -O2)",
+                "Build: Generic -O2 x64 (Release)",
+                "Build: MinSize -Os x64 (Release)",
+                "Build: Debug",
                 "copy-to-downloads"
             ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
             "problemMatcher":[]
         }
     ]
