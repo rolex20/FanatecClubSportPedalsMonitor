@@ -14,7 +14,7 @@
                 "-std=c11",
                 "${workspaceFolder}\\*.c",
                 "-o",
-                "${workspaceFolder}\\fanatecmonitor_GracemontO2.exe",
+                "${workspaceFolder}\\build\\fanatecmonitor_GracemontO2.exe",
                 "-lwinmm"
             ],
             "options": {
@@ -38,7 +38,7 @@
                 "-std=c11",
                 "${workspaceFolder}\\*.c",
                 "-o",
-                "${workspaceFolder}\\fanatecmonitor_RaptorLakeO2.exe",
+                "${workspaceFolder}\\build\\fanatecmonitor_RaptorLakeO2.exe",
                 "-lwinmm"
             ],
             "options": {
@@ -60,7 +60,7 @@
                 "-std=c11",
                 "${workspaceFolder}\\*.c",
                 "-o",
-                "${workspaceFolder}\\fanatecmonitor_ReleaseO2.exe",
+                "${workspaceFolder}\\build\\fanatecmonitor_ReleaseO2.exe",
                 "-lwinmm"
             ],
             "options": {
@@ -82,7 +82,7 @@
                 "-std=c11",
                 "${workspaceFolder}\\*.c",
                 "-o",
-                "${workspaceFolder}\\fanatecmonitor_ReleaseOs.exe",
+                "${workspaceFolder}\\build\\fanatecmonitor_ReleaseOs.exe",
                 "-lwinmm"
             ],
             "options": {
@@ -104,7 +104,7 @@
                 "-std=c11",
                 "${workspaceFolder}\\*.c",
                 "-o",
-                "${workspaceFolder}\\fanatecmonitor_Debug.exe",
+                "${workspaceFolder}\\build\\fanatecmonitor_Debug.exe",
                 "-lwinmm"
             ],
             "options": {
