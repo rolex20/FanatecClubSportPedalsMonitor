@@ -1,5 +1,5 @@
 /*
- * Fanatec ClubSport Pedals Monitor (cleaned from telemetry)
+ * Fanatec ClubSport Pedals Monitor (monitoring-only)
  *
  * Goals:
  *   - Keep clutch noise + gas drift monitoring (and optional estimator/auto-adjust).
@@ -9,14 +9,15 @@
  *   - Keep CPU usage extremely low.
  *
  * Build (MSYS2 MINGW64):
- *   gcc -O2 -Wall -Wextra -std=c11 -o fanatecmonitor.exe main.c -lwinmm
+ *   gcc -O3 -Wall -Wextra -std=c11 -o fanatecmonitor.exe main.c -lwinmm
  *   in my 14700K E-Cores:
- *   Can Compile with: gcc -O2 -march=gracemont -mtune=gracemont -Wall -Wextra -std=c11 main.c -o fanatecmonitor.exe -lwinmm
+ *   Can Compile with: gcc -O3 -march=gracemont -mtune=gracemont -Wall -Wextra -std=c11 main.c -o fanatecmonitor.exe -lwinmm
  *
  * With NetBeans IDE 18, I had to dd c:\windows\system32\winmm.dll in
  * Run->Set-Project-Configuration->Customize->Build->Linker->Libraries->Add-Library-File
  * according to the required by joyGetPosEx() en https://learn.microsoft.com/en-us/previous-versions/ms709354(v=vs.85)
- * Now using VSCode and MSYS MINGW64, gcc 15
+ * 
+ * NetBeans not used (latest version ruined the c plugin), now switched to VsCode, and MSYS2 UCRT64 MINGW64/w gcc 15
  */
 
 #include <stdio.h>
@@ -61,13 +62,6 @@ typedef struct Options {
     /* Loop control */
     unsigned iterations;         /* 0 => infinite */
     unsigned sleep_ms;           /* must be > 0 */
-
-    /* Deterministic microbenchmark */
-    int      bench_mode;
-    unsigned bench_iters;
-    unsigned bench_warmup;
-    unsigned bench_dt_ms;
-    unsigned bench_report_every;
 
     /* Clutch tuning */
     unsigned margin_percent;     /* 0..100 */
@@ -130,9 +124,6 @@ typedef struct Runtime {
     DWORD    last_estimate_print_ms;
 } Runtime;
 
-static volatile ULONGLONG g_bench_alert_count = 0;
-static volatile ULONGLONG g_bench_checksum_sink = 0;
-
 /* ------------------------------------------------------------------------- */
 /* Forward declarations (keeps the file “literate”: story first, detail later) */
 
@@ -150,7 +141,6 @@ static int  select_joystick(Options *opt);
 static int  init_monitor(const Options *opt, Runtime *rt, JOYINFOEX *info);
 
 static void run_loop(Options *opt, Runtime *rt, JOYINFOEX *info);
-static void run_bench_loop(Options *opt);
 
 /* Monitoring helpers */
 static void handle_clutch(const Options *opt, Runtime *rt, DWORD gas, DWORD clutch);
@@ -170,12 +160,6 @@ static inline DWORD normalize_pedal_axis(int enabled, DWORD raw, DWORD axis_max)
 /* Runtime init */
 static void runtime_recompute_thresholds(const Options *opt, Runtime *rt);
 static void runtime_reset_detectors(const Options *opt, Runtime *rt);
-
-static uint32_t bench_lcg_next(uint32_t *state);
-static void bench_step(const Options *opt, Runtime *rt, DWORD now, uint32_t iter_index,
-                       uint32_t *rng_state, uint64_t *checksum);
-static ULONGLONG filetime_to_u64(const FILETIME *ft);
-static int get_thread_cpu_100ns(HANDLE thread, ULONGLONG *out_cpu_100ns);
 
 /* Alerting (TTS always enabled) */
 static void alert_msg(const Options *opt, const char *text, size_t text_len, int log_to_console);
@@ -199,12 +183,6 @@ main(int argc, char **argv)
     options_set_defaults(&opt);
 
     parse_args(argc, argv, &opt);
-
-    if (opt.bench_mode) {
-        apply_process_tuning(&opt);
-        run_bench_loop(&opt);
-        return EXIT_SUCCESS;
-    }
 
     if (!acquire_single_instance(&opt, "fanatec_monitor_single_instance_mutex", &hMutex))
         return EXIT_FAILURE;
@@ -249,12 +227,6 @@ options_set_defaults(Options *opt)
 
     opt->iterations = 1;              /* 0 => infinite */
     opt->sleep_ms = 1000;
-
-    opt->bench_mode = 0;
-    opt->bench_iters = 1000000u;
-    opt->bench_warmup = 200000u;
-    opt->bench_dt_ms = 1u;
-    opt->bench_report_every = 1000u;
 
     opt->margin_percent = 5;
     opt->clutch_repeat_required = 4;
@@ -301,19 +273,12 @@ show_help_and_exit(void)
 
     puts("  General:");
     puts("    --verbose / --brief     Verbose logging on/off.");
-    puts("    --sleep MS              Poll interval in ms (default 1000; must be > 0 outside --bench).");
+    puts("    --sleep MS              Poll interval in ms (default 1000; must be > 0).");
     puts("    --iterations N          0 => infinite.");
     puts("    --flags N               JOYINFOEX flags; default JOY_RETURNALL.");
     puts("    --no-axis-normalization Use raw axis direction (no inversion).");
     puts("    --debug-raw             In verbose mode, print raw + normalized values.");
     puts("    --no-console-banner     Suppress startup/status banners.\n");
-
-    puts("  Benchmark:");
-    puts("    --bench                 Run deterministic microbenchmark mode.");
-    puts("    --bench-iters N         Measured iterations; default 1000000.");
-    puts("    --bench-warmup N        Warmup iterations; default 200000.");
-    puts("    --bench-dt-ms N         Virtual dt in ms; default 1.");
-    puts("    --bench-report-every N  Report interval; default 1000.\n");
 
     puts("  Priority/Affinity:");
     puts("    --idle                  Set IDLE priority.");
@@ -342,13 +307,6 @@ parse_args(int argc, char **argv, Options *opt)
 {
     int c;
     int joy_id_set = 0;
-    enum {
-        OPT_BENCH = 1000,
-        OPT_BENCH_ITERS,
-        OPT_BENCH_WARMUP,
-        OPT_BENCH_DT_MS,
-        OPT_BENCH_REPORT_EVERY
-    };
 
     while (1) {
         struct option long_options[] = {
@@ -362,7 +320,6 @@ parse_args(int argc, char **argv, Options *opt)
 
             {"ipc",                       no_argument,       &opt->ipc_enabled, 1},
             {"no-console-banner",         no_argument,       &opt->no_console_banner, 1},
-            {"bench",                     no_argument,       &opt->bench_mode, 1},
 
             {"help",                      no_argument,       0, 'h'},
             {"no_buffer",                 no_argument,       0, 'n'},
@@ -371,10 +328,6 @@ parse_args(int argc, char **argv, Options *opt)
             {"flags",                     required_argument, 0, 'f'},
             {"sleep",                     required_argument, 0, 's'},
             {"joystick",                  required_argument, 0, 'j'},
-            {"bench-iters",               required_argument, 0, OPT_BENCH_ITERS},
-            {"bench-warmup",              required_argument, 0, OPT_BENCH_WARMUP},
-            {"bench-dt-ms",               required_argument, 0, OPT_BENCH_DT_MS},
-            {"bench-report-every",        required_argument, 0, OPT_BENCH_REPORT_EVERY},
 
             {"idle",                      no_argument,       0, 'd'},
             {"belownormal",               no_argument,       0, 'b'},
@@ -489,22 +442,6 @@ parse_args(int argc, char **argv, Options *opt)
             opt->target_product_id = (int)strtol(optarg, NULL, 16);
             break;
 
-        case OPT_BENCH_ITERS:
-            opt->bench_iters = (unsigned)strtoul(optarg, NULL, 10);
-            break;
-
-        case OPT_BENCH_WARMUP:
-            opt->bench_warmup = (unsigned)strtoul(optarg, NULL, 10);
-            break;
-
-        case OPT_BENCH_DT_MS:
-            opt->bench_dt_ms = (unsigned)strtoul(optarg, NULL, 10);
-            break;
-
-        case OPT_BENCH_REPORT_EVERY:
-            opt->bench_report_every = (unsigned)strtoul(optarg, NULL, 10);
-            break;
-
         case '?':
             /* getopt_long already printed an error. */
             break;
@@ -515,11 +452,11 @@ parse_args(int argc, char **argv, Options *opt)
     }
 
     /* If neither joystick ID nor VID/PID were provided, show help. */
-    if (!opt->bench_mode && !joy_id_set && opt->target_vendor_id == 0)
+    if (!joy_id_set && opt->target_vendor_id == 0)
         show_help_and_exit();
 
     /* Validation (quietly defensive; fail fast). */
-    if (!opt->bench_mode && opt->joy_id > 15 && opt->target_vendor_id == 0) {
+    if (opt->joy_id > 15 && opt->target_vendor_id == 0) {
         fprintf(stderr, "Error: Invalid Joystick ID (0-15).\n");
         exit(EXIT_FAILURE);
     }
@@ -527,20 +464,8 @@ parse_args(int argc, char **argv, Options *opt)
         fprintf(stderr, "Error: margin must be 0-100.\n");
         exit(EXIT_FAILURE);
     }
-    if (!opt->bench_mode && opt->sleep_ms == 0u) {
+    if (opt->sleep_ms == 0u) {
         fprintf(stderr, "Error: sleep must be > 0 ms.\n");
-        exit(EXIT_FAILURE);
-    }
-    if (opt->bench_mode && opt->bench_iters == 0u) {
-        fprintf(stderr, "Error: bench-iters must be > 0.\n");
-        exit(EXIT_FAILURE);
-    }
-    if (opt->bench_mode && opt->bench_dt_ms == 0u) {
-        fprintf(stderr, "Error: bench-dt-ms must be > 0.\n");
-        exit(EXIT_FAILURE);
-    }
-    if (opt->bench_mode && opt->bench_report_every == 0u) {
-        fprintf(stderr, "Error: bench-report-every must be > 0.\n");
         exit(EXIT_FAILURE);
     }
     if (opt->gas_deadzone_in < 0 || opt->gas_deadzone_in > 100 ||
@@ -687,681 +612,6 @@ init_monitor(const Options *opt, Runtime *rt, JOYINFOEX *info)
 }
 
 /* ------------------------------------------------------------------------- */
-/* Deterministic benchmark loop */
-
-static uint32_t
-bench_lcg_next(uint32_t *state)
-{
-    *state = (*state * 1664525u) + 1013904223u;
-    return *state;
-}
-
-static void
-bench_step(const Options *opt, Runtime *rt, DWORD now, uint32_t iter_index,
-           uint32_t *rng_state, uint64_t *checksum)
-{
-    DWORD gas_norm;
-    DWORD clutch_norm;
-    DWORD raw_gas;
-    DWORD raw_clutch;
-    DWORD gas;
-    DWORD clutch;
-
-    const DWORD axis_max = rt->axis_max;
-    const DWORD axis_span = axis_max + 1u;
-    const uint32_t phase = iter_index % 50000u;
-
-    DWORD r_gas = (DWORD)(bench_lcg_next(rng_state) & axis_max);
-    DWORD r_clutch = (DWORD)(bench_lcg_next(rng_state) & axis_max);
-
-    if (phase < 512u) {
-        gas_norm = 0u;
-        clutch_norm = axis_max / 2u;
-    } else if (phase < 35512u) {
-        DWORD floor = (DWORD)((axis_max * 25u) / 100u);
-        DWORD span = (DWORD)((axis_max * 60u) / 100u);
-        gas_norm = floor + (DWORD)(((uint64_t)r_gas * (uint64_t)(span + 1u)) / (uint64_t)axis_span);
-        clutch_norm = r_clutch;
-    } else if (phase < 36512u) {
-        gas_norm = axis_max;
-        clutch_norm = axis_max;
-    } else {
-        gas_norm = r_gas;
-        clutch_norm = r_clutch;
-    }
-
-    raw_gas = opt->axis_normalization_enabled ? (axis_max - gas_norm) : gas_norm;
-    raw_clutch = opt->axis_normalization_enabled ? (axis_max - clutch_norm) : clutch_norm;
-
-    gas = normalize_pedal_axis(opt->axis_normalization_enabled, raw_gas, axis_max);
-    clutch = normalize_pedal_axis(opt->axis_normalization_enabled, raw_clutch, axis_max);
-
-    handle_clutch(opt, rt, gas, clutch);
-    handle_gas(opt, rt, now, gas);
-
-    {
-        uint64_t mix = 0u;
-        mix ^= (uint64_t)gas;
-        mix ^= ((uint64_t)clutch << 16);
-        mix ^= ((uint64_t)(rt->clutch_repeat_count & 0xFFFF) << 32);
-        mix ^= ((uint64_t)(rt->is_racing ? 1u : 0u) << 48);
-        mix ^= ((uint64_t)rt->best_estimate_percent << 56);
-        mix ^= ((uint64_t)rt->peak_gas_in_window << 8);
-        mix ^= ((uint64_t)rt->last_full_throttle_ms << 1);
-        mix ^= ((uint64_t)rt->last_gas_alert_ms << 3);
-        mix ^= ((uint64_t)(unsigned)rt->gas_deadzone_out_current << 40);
-        *checksum ^= mix + 0x9e3779b97f4a7c15ULL + ((*checksum << 6) + (*checksum >> 2));
-    }
-}
-
-static ULONGLONG
-filetime_to_u64(const FILETIME *ft)
-{
-    ULARGE_INTEGER ui;
-    ui.LowPart = ft->dwLowDateTime;
-    ui.HighPart = ft->dwHighDateTime;
-    return ui.QuadPart;
-}
-
-static int
-get_thread_cpu_100ns(HANDLE thread, ULONGLONG *out_cpu_100ns)
-{
-    FILETIME creation;
-    FILETIME exit_time;
-    FILETIME kernel;
-    FILETIME user;
-
-    if (!GetThreadTimes(thread, &creation, &exit_time, &kernel, &user))
-        return 0;
-
-    *out_cpu_100ns = filetime_to_u64(&kernel) + filetime_to_u64(&user);
-    return 1;
-}
-
-typedef struct BenchQpcTimer {
-    LARGE_INTEGER freq;
-    LARGE_INTEGER active_start;
-    LONGLONG block_ticks;
-    LONGLONG total_ticks;
-    int have_qpc;
-    int running;
-} BenchQpcTimer;
-
-static void
-bench_qpc_timer_init(BenchQpcTimer *timer)
-{
-    memset(timer, 0, sizeof(*timer));
-    timer->have_qpc = QueryPerformanceFrequency(&timer->freq) ? 1 : 0;
-}
-
-static void
-bench_qpc_timer_start(BenchQpcTimer *timer)
-{
-    if (!timer->have_qpc)
-        return;
-
-    if (QueryPerformanceCounter(&timer->active_start))
-        timer->running = 1;
-    else
-        timer->have_qpc = 0;
-}
-
-static LONGLONG
-bench_qpc_timer_pause(BenchQpcTimer *timer)
-{
-    LARGE_INTEGER now;
-    LONGLONG delta = 0;
-
-    if (!timer->have_qpc || !timer->running)
-        return 0;
-
-    if (!QueryPerformanceCounter(&now)) {
-        timer->have_qpc = 0;
-        timer->running = 0;
-        return 0;
-    }
-
-    delta = now.QuadPart - timer->active_start.QuadPart;
-    if (delta < 0)
-        delta = 0;
-
-    timer->block_ticks += delta;
-    timer->total_ticks += delta;
-    timer->running = 0;
-    return delta;
-}
-
-static void
-bench_qpc_timer_resume(BenchQpcTimer *timer)
-{
-    if (!timer->have_qpc || timer->running)
-        return;
-
-    if (QueryPerformanceCounter(&timer->active_start))
-        timer->running = 1;
-    else
-        timer->have_qpc = 0;
-}
-
-static void
-bench_qpc_timer_reset_block(BenchQpcTimer *timer)
-{
-    timer->block_ticks = 0;
-}
-
-static void
-bench_store_metric(double *values, size_t capacity, size_t *count, double value)
-{
-    if (values == NULL || count == NULL)
-        return;
-    if (*count >= capacity)
-        return;
-
-    values[*count] = value;
-    (*count)++;
-}
-
-static int
-bench_compare_double_asc(const void *a, const void *b)
-{
-    const double da = *(const double *)a;
-    const double db = *(const double *)b;
-
-    if (da < db)
-        return -1;
-    if (da > db)
-        return 1;
-    return 0;
-}
-
-static int
-bench_median_of_block_avgs(double *values, size_t count, double *out_median)
-{
-    if (values == NULL || out_median == NULL || count == 0u)
-        return 0;
-
-    qsort(values, count, sizeof(values[0]), bench_compare_double_asc);
-
-    if ((count & 1u) != 0u) {
-        *out_median = values[count / 2u];
-    } else {
-        const size_t hi = count / 2u;
-        const size_t lo = hi - 1u;
-        *out_median = (values[lo] + values[hi]) * 0.5;
-    }
-
-    return 1;
-}
-
-static void
-run_bench_loop(Options *opt)
-{
-    Runtime rt;
-    BenchQpcTimer wall_timer;
-    DWORD virtual_now = 0u;
-    uint32_t iter_index = 0u;
-    uint32_t rng_state = 0x13579BDFu;
-    uint64_t checksum = 0u;
-
-    HANDLE current_thread = GetCurrentThread();
-    ULONGLONG cycles_start = 0u;
-    ULONGLONG cycles_block_base = 0u;
-    int have_cycles = 0;
-    ULONGLONG cpu_start_100ns = 0u;
-    ULONGLONG cpu_block_base_100ns = 0u;
-    int have_cpu = 0;
-    ULONGLONG cum_cycles = 0u;
-    ULONGLONG cum_cpu_100ns = 0u;
-    int have_cum_cycles = 0;
-    int have_cum_cpu = 0;
-
-    ULONGLONG block_alert_prev = 0u;
-    unsigned long long measured_done = 0u;
-    unsigned long long block_iters = 0u;
-    unsigned long long blocks_done = 0u;
-
-    int have_min_block_cycles = 0;
-    int have_min_block_cpu_ns = 0;
-    int have_min_block_wall_us = 0;
-    int have_min_block_eff_ghz = 0;
-    int have_min_iter_wall_us = 0;
-    double min_block_cycles_per_iter_so_far = 0.0;
-    double min_block_cpu_ns_per_iter_so_far = 0.0;
-    double min_block_wall_us_per_iter_so_far = 0.0;
-    double min_block_eff_ghz_so_far = 0.0;
-    double min_iter_wall_us_so_far = 0.0;
-
-    unsigned long long block_capacity_ull;
-    size_t block_capacity = 0u;
-    double *block_cycles_samples = NULL;
-    double *block_cpu_ns_samples = NULL;
-    double *block_wall_us_samples = NULL;
-    double *block_eff_ghz_samples = NULL;
-    size_t block_cycles_count = 0u;
-    size_t block_cpu_ns_count = 0u;
-    size_t block_wall_us_count = 0u;
-    size_t block_eff_ghz_count = 0u;
-
-    memset(&rt, 0, sizeof(rt));
-    rt.gas_deadzone_out_current = opt->gas_deadzone_out;
-    rt.best_estimate_percent = 100u;
-    rt.last_printed_estimate = 100u;
-    runtime_recompute_thresholds(opt, &rt);
-    bench_qpc_timer_init(&wall_timer);
-
-    block_capacity_ull =
-        ((unsigned long long)opt->bench_iters +
-         (unsigned long long)opt->bench_report_every - 1ull) /
-        (unsigned long long)opt->bench_report_every;
-
-    if (block_capacity_ull <= (unsigned long long)SIZE_MAX)
-        block_capacity = (size_t)block_capacity_ull;
-
-    if (block_capacity > 0u) {
-        block_cycles_samples = (double *)malloc(block_capacity * sizeof(double));
-        block_cpu_ns_samples = (double *)malloc(block_capacity * sizeof(double));
-        block_wall_us_samples = (double *)malloc(block_capacity * sizeof(double));
-        block_eff_ghz_samples = (double *)malloc(block_capacity * sizeof(double));
-
-        if (block_cycles_samples == NULL ||
-            block_cpu_ns_samples == NULL ||
-            block_wall_us_samples == NULL ||
-            block_eff_ghz_samples == NULL) {
-            free(block_cycles_samples);
-            free(block_cpu_ns_samples);
-            free(block_wall_us_samples);
-            free(block_eff_ghz_samples);
-            block_cycles_samples = NULL;
-            block_cpu_ns_samples = NULL;
-            block_wall_us_samples = NULL;
-            block_eff_ghz_samples = NULL;
-            block_capacity = 0u;
-        }
-    }
-
-    g_bench_alert_count = 0u;
-    g_bench_checksum_sink = 0u;
-
-    printf("[Bench] warmup=%u measure=%u dt_ms=%u report_every=%u sleep_ms=%u\n",
-           opt->bench_warmup, opt->bench_iters, opt->bench_dt_ms,
-           opt->bench_report_every, opt->sleep_ms);
-
-    for (unsigned i = 0; i < opt->bench_warmup; ++i) {
-        bench_step(opt, &rt, virtual_now, iter_index, &rng_state, &checksum);
-        iter_index++;
-        virtual_now += (DWORD)opt->bench_dt_ms;
-        Sleep(opt->sleep_ms);
-    }
-
-    checksum = 0u;
-    g_bench_alert_count = 0u;
-
-    have_cycles = QueryThreadCycleTime(current_thread, &cycles_start) ? 1 : 0;
-    cycles_block_base = cycles_start;
-
-    have_cpu = get_thread_cpu_100ns(current_thread, &cpu_start_100ns);
-    cpu_block_base_100ns = cpu_start_100ns;
-
-    bench_qpc_timer_start(&wall_timer);
-
-    for (unsigned i = 0; i < opt->bench_iters; ++i) {
-        bench_step(opt, &rt, virtual_now, iter_index, &rng_state, &checksum);
-        iter_index++;
-
-        virtual_now += (DWORD)opt->bench_dt_ms;
-
-        measured_done++;
-        block_iters++;
-        {
-            int should_report =
-                (block_iters == opt->bench_report_every || measured_done == opt->bench_iters);
-            int refresh_baselines_after_report = 0;
-
-            LONGLONG iter_wall_ticks = bench_qpc_timer_pause(&wall_timer);
-            if (wall_timer.have_qpc) {
-                double iter_wall_us =
-                    ((double)iter_wall_ticks * 1000000.0) / (double)wall_timer.freq.QuadPart;
-                if (!have_min_iter_wall_us || iter_wall_us < min_iter_wall_us_so_far) {
-                    min_iter_wall_us_so_far = iter_wall_us;
-                    have_min_iter_wall_us = 1;
-                }
-            }
-
-            if (should_report) {
-                ULONGLONG block_alerts;
-                ULONGLONG total_alerts;
-                ULONGLONG block_cycles = 0u;
-                ULONGLONG block_cpu_100ns = 0u;
-                int have_block_cycles = 0;
-                int have_block_cpu = 0;
-                int have_block_eff_ghz = 0;
-                double block_cycles_per_iter = 0.0;
-                double block_cpu_ns_per_iter = 0.0;
-                double block_wall_us_per_iter = 0.0;
-                double block_eff_ghz = 0.0;
-                double cum_eff_ghz = 0.0;
-
-                if (have_cycles) {
-                    ULONGLONG cycles_now = 0u;
-                    if (QueryThreadCycleTime(current_thread, &cycles_now)) {
-                        block_cycles = cycles_now - cycles_block_base;
-                        have_block_cycles = 1;
-                    } else {
-                        have_cycles = 0;
-                    }
-                }
-
-                if (have_cpu) {
-                    ULONGLONG cpu_now_100ns = 0u;
-                    if (get_thread_cpu_100ns(current_thread, &cpu_now_100ns)) {
-                        block_cpu_100ns = cpu_now_100ns - cpu_block_base_100ns;
-                        have_block_cpu = 1;
-                    } else {
-                        have_cpu = 0;
-                    }
-                }
-
-                total_alerts = g_bench_alert_count;
-                block_alerts = total_alerts - block_alert_prev;
-                block_alert_prev = total_alerts;
-
-                if (have_block_cycles) {
-                    block_cycles_per_iter = (double)block_cycles / (double)block_iters;
-                    cum_cycles += block_cycles;
-                    have_cum_cycles = 1;
-                    if (!have_min_block_cycles ||
-                        block_cycles_per_iter < min_block_cycles_per_iter_so_far) {
-                        min_block_cycles_per_iter_so_far = block_cycles_per_iter;
-                        have_min_block_cycles = 1;
-                    }
-                    bench_store_metric(block_cycles_samples, block_capacity,
-                                       &block_cycles_count, block_cycles_per_iter);
-                }
-
-                if (have_block_cpu) {
-                    block_cpu_ns_per_iter =
-                        ((double)block_cpu_100ns * 100.0) / (double)block_iters;
-                    cum_cpu_100ns += block_cpu_100ns;
-                    have_cum_cpu = 1;
-                    if (!have_min_block_cpu_ns ||
-                        block_cpu_ns_per_iter < min_block_cpu_ns_per_iter_so_far) {
-                        min_block_cpu_ns_per_iter_so_far = block_cpu_ns_per_iter;
-                        have_min_block_cpu_ns = 1;
-                    }
-                    bench_store_metric(block_cpu_ns_samples, block_capacity,
-                                       &block_cpu_ns_count, block_cpu_ns_per_iter);
-                }
-
-                if (wall_timer.have_qpc) {
-                    block_wall_us_per_iter =
-                        ((double)wall_timer.block_ticks * 1000000.0) /
-                        ((double)wall_timer.freq.QuadPart * (double)block_iters);
-                    if (!have_min_block_wall_us ||
-                        block_wall_us_per_iter < min_block_wall_us_per_iter_so_far) {
-                        min_block_wall_us_per_iter_so_far = block_wall_us_per_iter;
-                        have_min_block_wall_us = 1;
-                    }
-                    bench_store_metric(block_wall_us_samples, block_capacity,
-                                       &block_wall_us_count, block_wall_us_per_iter);
-                }
-
-                if (have_block_cycles && have_block_cpu && block_cpu_100ns > 0u) {
-                    block_eff_ghz = (double)block_cycles / ((double)block_cpu_100ns * 100.0);
-                    have_block_eff_ghz = 1;
-
-                    if (!have_min_block_eff_ghz || block_eff_ghz < min_block_eff_ghz_so_far) {
-                        min_block_eff_ghz_so_far = block_eff_ghz;
-                        have_min_block_eff_ghz = 1;
-                    }
-
-                    bench_store_metric(block_eff_ghz_samples, block_capacity,
-                                       &block_eff_ghz_count, block_eff_ghz);
-                }
-
-                if (have_cum_cycles && have_cum_cpu && cum_cpu_100ns > 0u) {
-                    cum_eff_ghz = (double)cum_cycles / ((double)cum_cpu_100ns * 100.0);
-                }
-
-                printf("[Bench] iter=%llu  block:",
-                       measured_done);
-                if (have_block_cycles)
-                    printf(" cycles/iter=%.2f", block_cycles_per_iter);
-                else
-                    printf(" cycles/iter=N/A");
-
-                if (have_block_cpu)
-                    printf(" cpu_ns/iter=%.2f", block_cpu_ns_per_iter);
-                else
-                    printf(" cpu_ns/iter=N/A");
-
-                if (wall_timer.have_qpc)
-                    printf(" wall_us/iter=%.3f", block_wall_us_per_iter);
-                else
-                    printf(" wall_us/iter=N/A");
-
-                if (have_block_eff_ghz) {
-                    printf(" eff_GHz=%.3f", block_eff_ghz);
-                } else {
-                    printf(" eff_GHz=N/A");
-                }
-
-                printf(" best:");
-                if (have_min_block_cycles)
-                    printf(" min_block_cycles=%.2f", min_block_cycles_per_iter_so_far);
-                else
-                    printf(" min_block_cycles=N/A");
-
-                if (have_min_block_cpu_ns)
-                    printf(" min_block_cpu_ns=%.2f", min_block_cpu_ns_per_iter_so_far);
-                else
-                    printf(" min_block_cpu_ns=N/A");
-
-                if (have_min_block_wall_us)
-                    printf(" min_block_wall_us=%.3f", min_block_wall_us_per_iter_so_far);
-                else
-                    printf(" min_block_wall_us=N/A");
-
-                if (have_min_iter_wall_us)
-                    printf(" min_iter_wall_us=%.3f", min_iter_wall_us_so_far);
-                else
-                    printf(" min_iter_wall_us=N/A");
-
-                printf(" alerts=%llu checksum=%llu\n", block_alerts, (unsigned long long)checksum);
-
-                printf("        cumulative:");
-                if (have_cum_cycles)
-                    printf(" cycles/iter=%.2f", (double)cum_cycles / (double)measured_done);
-                else
-                    printf(" cycles/iter=N/A");
-
-                if (have_cum_cpu)
-                    printf(" cpu_ns/iter=%.2f",
-                           ((double)cum_cpu_100ns * 100.0) / (double)measured_done);
-                else
-                    printf(" cpu_ns/iter=N/A");
-
-                if (wall_timer.have_qpc)
-                    printf(" wall_us/iter=%.3f",
-                           ((double)wall_timer.total_ticks * 1000000.0) /
-                           ((double)wall_timer.freq.QuadPart * (double)measured_done));
-                else
-                    printf(" wall_us/iter=N/A");
-
-                if (have_cum_cycles && have_cum_cpu && cum_cpu_100ns > 0u) {
-                    printf(" eff_GHz=%.3f", cum_eff_ghz);
-                } else {
-                    printf(" eff_GHz=N/A");
-                }
-
-                printf(" alerts=%llu checksum=%llu\n", total_alerts, (unsigned long long)checksum);
-
-                blocks_done++;
-                block_iters = 0u;
-                bench_qpc_timer_reset_block(&wall_timer);
-                refresh_baselines_after_report = 1;
-            }
-
-            Sleep(opt->sleep_ms);
-
-            if (refresh_baselines_after_report) {
-                if (have_cycles) {
-                    ULONGLONG cycles_after_pause = 0u;
-                    if (QueryThreadCycleTime(current_thread, &cycles_after_pause))
-                        cycles_block_base = cycles_after_pause;
-                    else
-                        have_cycles = 0;
-                }
-
-                if (have_cpu) {
-                    ULONGLONG cpu_after_pause_100ns = 0u;
-                    if (get_thread_cpu_100ns(current_thread, &cpu_after_pause_100ns))
-                        cpu_block_base_100ns = cpu_after_pause_100ns;
-                    else
-                        have_cpu = 0;
-                }
-            }
-        }
-
-        bench_qpc_timer_resume(&wall_timer);
-    }
-
-    g_bench_checksum_sink = checksum;
-    printf("[Bench] final checksum=%llu sink=%llu alerts=%llu\n",
-           (unsigned long long)checksum,
-           (unsigned long long)g_bench_checksum_sink,
-           (unsigned long long)g_bench_alert_count);
-
-    {
-        double cycles_mean = 0.0;
-        double cpu_mean_ns = 0.0;
-        double wall_mean_us = 0.0;
-        double eff_mean_ghz = 0.0;
-        double cycles_median = 0.0;
-        double cpu_median_ns = 0.0;
-        double wall_median_us = 0.0;
-        double eff_median_ghz = 0.0;
-        int have_cycles_mean = 0;
-        int have_cpu_mean = 0;
-        int have_wall_mean = 0;
-        int have_eff_mean = 0;
-        int have_cycles_median = 0;
-        int have_cpu_median = 0;
-        int have_wall_median = 0;
-        int have_eff_median = 0;
-
-        if (have_cum_cycles && measured_done > 0u) {
-            cycles_mean = (double)cum_cycles / (double)measured_done;
-            have_cycles_mean = 1;
-        }
-        if (have_cum_cpu && measured_done > 0u) {
-            cpu_mean_ns = ((double)cum_cpu_100ns * 100.0) / (double)measured_done;
-            have_cpu_mean = 1;
-        }
-        if (wall_timer.have_qpc && measured_done > 0u) {
-            wall_mean_us =
-                ((double)wall_timer.total_ticks * 1000000.0) /
-                ((double)wall_timer.freq.QuadPart * (double)measured_done);
-            have_wall_mean = 1;
-        }
-        if (have_cum_cycles && have_cum_cpu && cum_cpu_100ns > 0u) {
-            eff_mean_ghz = (double)cum_cycles / ((double)cum_cpu_100ns * 100.0);
-            have_eff_mean = 1;
-        }
-
-        have_cycles_median =
-            bench_median_of_block_avgs(block_cycles_samples, block_cycles_count, &cycles_median);
-        have_cpu_median =
-            bench_median_of_block_avgs(block_cpu_ns_samples, block_cpu_ns_count, &cpu_median_ns);
-        have_wall_median =
-            bench_median_of_block_avgs(block_wall_us_samples, block_wall_us_count, &wall_median_us);
-        have_eff_median =
-            bench_median_of_block_avgs(block_eff_ghz_samples, block_eff_ghz_count, &eff_median_ghz);
-
-        printf("[BenchSummary] iters=%u blocks=%llu sleep_ms=%u dt_ms=%u report_every=%u\n",
-               opt->bench_iters, blocks_done, opt->sleep_ms, opt->bench_dt_ms, opt->bench_report_every);
-
-        printf("[BenchSummary] cycles/iter: mean=");
-        if (have_cycles_mean)
-            printf("%.2f", cycles_mean);
-        else
-            printf("N/A");
-        printf(" median=");
-        if (have_cycles_median)
-            printf("%.2f", cycles_median);
-        else
-            printf("N/A");
-        printf(" min_block=");
-        if (have_min_block_cycles)
-            printf("%.2f\n", min_block_cycles_per_iter_so_far);
-        else
-            printf("N/A\n");
-
-        printf("[BenchSummary] cpu_ns/iter: mean=");
-        if (have_cpu_mean)
-            printf("%.2f", cpu_mean_ns);
-        else
-            printf("N/A");
-        printf(" median=");
-        if (have_cpu_median)
-            printf("%.2f", cpu_median_ns);
-        else
-            printf("N/A");
-        printf(" min_block=");
-        if (have_min_block_cpu_ns)
-            printf("%.2f\n", min_block_cpu_ns_per_iter_so_far);
-        else
-            printf("N/A\n");
-
-        printf("[BenchSummary] wall_us/iter: mean=");
-        if (have_wall_mean)
-            printf("%.3f", wall_mean_us);
-        else
-            printf("N/A");
-        printf(" median=");
-        if (have_wall_median)
-            printf("%.3f", wall_median_us);
-        else
-            printf("N/A");
-        printf(" min_block=");
-        if (have_min_block_wall_us)
-            printf("%.3f", min_block_wall_us_per_iter_so_far);
-        else
-            printf("N/A");
-        printf(" min_iter_wall_us=");
-        if (have_min_iter_wall_us)
-            printf("%.3f\n", min_iter_wall_us_so_far);
-        else
-            printf("N/A\n");
-
-        printf("[BenchSummary] eff_GHz: mean=");
-        if (have_eff_mean)
-            printf("%.3f", eff_mean_ghz);
-        else
-            printf("N/A");
-        printf(" median=");
-        if (have_eff_median)
-            printf("%.3f", eff_median_ghz);
-        else
-            printf("N/A");
-        printf(" min_block=");
-        if (have_min_block_eff_ghz)
-            printf("%.3f\n", min_block_eff_ghz_so_far);
-        else
-            printf("N/A\n");
-
-        printf("[BenchSummary] alerts=%llu checksum=%llu sink=%llu\n",
-               (unsigned long long)g_bench_alert_count,
-               (unsigned long long)checksum,
-               (unsigned long long)g_bench_checksum_sink);
-    }
-
-    free(block_cycles_samples);
-    free(block_cpu_ns_samples);
-    free(block_wall_us_samples);
-    free(block_eff_ghz_samples);
-}
-
-/* ------------------------------------------------------------------------- */
 /* Main loop */
 
 static void
@@ -1485,7 +735,7 @@ handle_gas(const Options *opt, Runtime *rt, DWORD now, DWORD gas)
                 rt->estimate_window_peak_percent = 0u;
             }
 
-            if (opt->verbose && !opt->bench_mode)
+            if (opt->verbose)
                 printf("Gas: Activity Resumed.\n");
         }
 
@@ -1493,7 +743,7 @@ handle_gas(const Options *opt, Runtime *rt, DWORD now, DWORD gas)
         rt->last_gas_activity_ms = now;
     } else {
         if (rt->is_racing && (now - rt->last_gas_activity_ms > rt->gas_timeout_ms)) {
-            if (opt->verbose && !opt->bench_mode)
+            if (opt->verbose)
                 printf("Gas: Auto-Pause (Idle for %d s).\n", opt->gas_timeout_sec);
 
             rt->is_racing = FALSE;
@@ -1603,10 +853,8 @@ handle_gas_estimator(const Options *opt, Runtime *rt, DWORD now, DWORD gas)
                 rt->gas_deadzone_out_current = (int)rt->best_estimate_percent;
                 runtime_recompute_thresholds(opt, rt);
 
-                if (!opt->bench_mode) {
-                    printf("[AutoAdjust] gas-deadzone-out updated to %d (min=%d)\n",
-                           rt->gas_deadzone_out_current, opt->auto_gas_deadzone_minimum);
-                }
+                printf("[AutoAdjust] gas-deadzone-out updated to %d (min=%d)\n",
+                       rt->gas_deadzone_out_current, opt->auto_gas_deadzone_minimum);
             }
         }
     }
@@ -1746,11 +994,6 @@ runtime_reset_detectors(const Options *opt, Runtime *rt)
 static void
 alert_msg(const Options *opt, const char *text, size_t text_len, int log_to_console)
 {
-    if (opt->bench_mode) {
-        g_bench_alert_count++;
-        return;
-    }
-
     if (log_to_console) {
         SYSTEMTIME t;
         GetLocalTime(&t);
