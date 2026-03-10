@@ -11,7 +11,7 @@
  * Build (MSYS2 MINGW64):
  *   gcc -O3 -Wall -Wextra -std=c11 -o fanatecmonitor.exe main.c -lwinmm
  *   in my 14700K E-Cores:
- *   Can Compile with: gcc -O3 -march=gracemont -mtune=gracemont -Wall -Wextra -std=c11 main.c -o fanatecmonitor.exe -lwinmm
+ *   Can Compile with: gcc -O3 -march=gracemont -flto -mtune=gracemont -Wall -Wextra -std=c11 main.c -o fanatecmonitor.exe -lwinmm
  *
  * With NetBeans IDE 18, I had to dd c:\windows\system32\winmm.dll in
  * Run->Set-Project-Configuration->Customize->Build->Linker->Libraries->Add-Library-File

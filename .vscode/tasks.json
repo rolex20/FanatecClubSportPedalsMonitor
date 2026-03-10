@@ -23,10 +23,37 @@
             },			
             "group": {
                 "kind": "build",
-                "isDefault": true
+                "isDefault": false
             },
             "problemMatcher": ["$gcc"]
         },
+        {
+            "label": "Build: Gracemont (Release -O3)",
+            "type": "process",
+            "command": "C:/msys64/ucrt64/bin/gcc.exe",
+            "args":[
+                "-O3",
+                "-s",
+                "-m64",
+                "-march=gracemont",
+                "-mtune=gracemont",
+                "-flto",
+                "-fwhole-program",
+                "-std=c11",
+                "${workspaceFolder}\\*.c",
+                "-o",
+                "${workspaceFolder}\\build\\fanatecmonitor_GracemontO3.exe",
+                "-lwinmm"
+            ],
+            "options": {
+                "cwd": "C:/msys64/ucrt64/bin"
+            },			
+            "group": {
+                "kind": "build",
+                "isDefault": false
+            },
+            "problemMatcher": ["$gcc"]
+        },        
         {
             "label": "Build: RaptorLake (Release -O2)",
             "type": "process",
@@ -131,11 +158,12 @@
             "label": "Build All AND Copy to Downloads",
             "dependsOrder": "sequence",
             "dependsOn":[
+                "Build: Debug",                
+                "Build: Gracemont (Release -O3)",                
                 "Build: Gracemont (Release -O2)",
                 "Build: RaptorLake (Release -O2)",
                 "Build: Generic -O2 x64 (Release)",
-                "Build: MinSize -Os x64 (Release)",
-                "Build: Debug",
+                "Build: MinSize -Os x64 (Release)",                
                 "copy-to-downloads"
             ],
             "group": {
