@@ -74,10 +74,7 @@ FORCE_INLINE DWORD GetFastTickCount(void) {
     return (DWORD)(((*tickCount) * (*multiplier)) >> 24);
 }
 
-/* PERSISTENT IPC PIPE: 
- * Opening a file/pipe handle inside an alert spikes latency (context switch to kernel).
- * By keeping it open globally, WriteFile is practically instant. */
-static HANDLE g_hIpcPipe = INVALID_HANDLE_VALUE;
+
 
 /* ------------------------------------------------------------------------- */
 /* Options and runtime state */
@@ -226,7 +223,10 @@ static void alert_msg(const Options *opt, const char *text, size_t text_len, int
 static void speak_ipc(const char *text, size_t text_len);
 static void speak_external(const char *text, size_t text_len);
 
+/* ALERT_LIT is for string literals whose length is known at compile time with sizeof */
 #define ALERT_LIT(opt, s) alert_msg((opt), (s), sizeof(s) - 1, 1)
+
+/* ALERT_BUF is for char * but we are *carefully* not using that */ 
 #define ALERT_BUF(opt, s) alert_msg((opt), (s), strlen(s), 1)
 
 /* ------------------------------------------------------------------------- */
@@ -260,11 +260,6 @@ main(int argc, char **argv)
     }
 
     run_loop(&opt, &rt, &info);
-
-    /* Clean up the IPC persistent pipe if it was used */
-    if (g_hIpcPipe != INVALID_HANDLE_VALUE) {
-        CloseHandle(g_hIpcPipe);
-    }
 
     cleanup_single_instance(hMutex);
     return EXIT_SUCCESS;
@@ -862,7 +857,7 @@ handle_gas(const Options * restrict opt, Runtime * restrict rt, DWORD now, DWORD
                 char *end_of_digits = gas_msg + 10; /* end of ******* field */
                 append_digits_from_right(percent_reached, ' ', end_of_digits, 11);
 
-                ALERT_BUF(opt, gas_msg);
+                ALERT_LIT(opt, gas_msg);
 
                 rt->last_gas_alert_ms = now;
             }
@@ -921,7 +916,7 @@ handle_gas_estimator(const Options * restrict opt, Runtime * restrict rt, DWORD 
                 size_t span = (size_t)(last_valid - speak_buf + 1);
                 append_digits_from_right(rt->best_estimate_percent, ':', last_valid, span);
 
-                ALERT_BUF(opt, speak_buf);
+                ALERT_LIT(opt, speak_buf);
 
                 rt->last_printed_estimate = rt->best_estimate_percent;
                 rt->last_estimate_print_ms = now;
@@ -1122,21 +1117,15 @@ speak_ipc(const char *text, size_t text_len)
     DWORD to_write = (DWORD)(prefix_len + text_len + 1);
     DWORD written;
 
-    /* PERSISTENT PIPE: Only open it once. This avoids kernel context-switch spikes. */
-    if (g_hIpcPipe == INVALID_HANDLE_VALUE) {
-        g_hIpcPipe = CreateFileA(pipe_name, GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
-    }
+    /*  PIPE: Cannot Only open it once: The server only accepts 1 client and needs to be responsive for other clients */
+    HANDLE hIpcPipe = CreateFileA(pipe_name, GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
 
-    if (g_hIpcPipe != INVALID_HANDLE_VALUE) {
-        if (!WriteFile(g_hIpcPipe, buffer, to_write, &written, NULL)) {
-            /* If the pipe broke (server crashed/restarted), attempt a 1-time reconnect */
-            CloseHandle(g_hIpcPipe);
-            g_hIpcPipe = CreateFileA(pipe_name, GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
-            if (g_hIpcPipe != INVALID_HANDLE_VALUE) {
-                WriteFile(g_hIpcPipe, buffer, to_write, &written, NULL);
-            }
-        }
+    /* Fire and forget */
+    if (hIpcPipe != INVALID_HANDLE_VALUE) {
+        WriteFile(hIpcPipe, buffer, to_write, &written, NULL);
+        CloseHandle(hIpcPipe);
     }
+    
 }
 
 static void
