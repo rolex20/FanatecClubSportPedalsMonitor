@@ -922,16 +922,52 @@ handle_gas_estimator(const Options * restrict opt, Runtime * restrict rt, DWORD 
                 rt->last_estimate_print_ms = now;
             }
 
+            
             if (opt->auto_gas_deadzone_enabled &&
-                (int)rt->best_estimate_percent < rt->gas_deadzone_out_current &&
-                (int)rt->best_estimate_percent >= opt->auto_gas_deadzone_minimum) {
+                (int)rt->best_estimate_percent < rt->gas_deadzone_out_current) {
 
-                rt->gas_deadzone_out_current = (int)rt->best_estimate_percent;
-                runtime_recompute_thresholds(opt, rt);
+                if ((int)rt->best_estimate_percent >= opt->auto_gas_deadzone_minimum) {
+                    rt->gas_deadzone_out_current = (int)rt->best_estimate_percent;
+                    runtime_recompute_thresholds(opt, rt);
 
-                printf("[AutoAdjust] gas-deadzone-out updated to %d (min=%d)\n",
-                       rt->gas_deadzone_out_current, opt->auto_gas_deadzone_minimum);
+                    static char log_buf[] =
+                        "[AutoAdjust] gas-deadzone-out updated to *** (min=***)";
+
+                    char *updated_last = log_buf + 43; /* last '*' in first "***" */
+                    char *minimum_last = log_buf + 52; /* last '*' in second "***" */
+
+                    size_t updated_span = (size_t)(updated_last - log_buf + 1);
+                    size_t minimum_span = (size_t)(minimum_last - log_buf + 1);
+
+                    append_digits_from_right((uint32_t)rt->gas_deadzone_out_current, ' ',
+                                             updated_last, updated_span);
+                    append_digits_from_right((uint32_t)opt->auto_gas_deadzone_minimum, '=',
+                                             minimum_last, minimum_span);
+
+                    puts(log_buf);
+                } else {
+                    static char speak_buf[] =
+                        "WARNING: Estimated deadzone *** percent, below minimum ***. "
+                        "Raise deadzone in game or reconnect controller.";
+
+                    char *estimate_last = speak_buf + 30; /* last '*' in first "***" */
+                    char *minimum_last  = speak_buf + 57; /* last '*' in second "***" */
+
+                    size_t estimate_span = (size_t)(estimate_last - speak_buf + 1);
+                    size_t minimum_span  = (size_t)(minimum_last  - speak_buf + 1);
+
+                    append_digits_from_right(rt->best_estimate_percent, ' ',
+                                             estimate_last, estimate_span);
+                    append_digits_from_right((uint32_t)opt->auto_gas_deadzone_minimum, ' ',
+                                             minimum_last, minimum_span);
+
+                    ALERT_LIT(opt, speak_buf);
+                }
             }
+
+
+
+
         }
     }
 
