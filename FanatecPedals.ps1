@@ -97,6 +97,7 @@ $Strings = @{
     AlertGasDrift    = "Gas {0} percent."
     AlertNewEstimate = "New deadzone estimation {0} percent."
     AlertAutoAdjust  = "Auto adjusted deadzone to {0} percent."
+    AlertBelowMinimum = "WARNING: Estimated deadzone {0} percent, below minimum {1}. Raise deadzone in game or reconnect controller."
     AutoPause        = "Gas: Auto-Pause (Idle for {0} s)."
     ResumingActivity = "Gas: Activity Resumed."
 	Duplicate        = "Error.  Another instance of Fanatec Monitor is already running."
@@ -461,6 +462,7 @@ namespace Fanatec {
         public int controller_reconnected;
         public int gas_estimate_decreased;
         public int gas_auto_adjust_applied;
+        public int gas_deadzone_minimum_breached;
         
         // Timestamps
         public uint last_disconnect_time_ms;
@@ -1473,9 +1475,10 @@ try {
         # NOTE: controller_disconnected is latched and is NOT cleared here.
         $State.gas_alert_triggered     = 0
         $State.clutch_alert_triggered  = 0
-        $State.gas_estimate_decreased  = 0
-        $State.gas_auto_adjust_applied = 0
-        $State.controller_reconnected  = 0
+        $State.gas_estimate_decreased        = 0
+        $State.gas_auto_adjust_applied       = 0
+        $State.gas_deadzone_minimum_breached = 0
+        $State.controller_reconnected        = 0
         
         $LoopCount++
         $State.iLoop = $LoopCount
@@ -1520,8 +1523,8 @@ try {
                     Publish-TelemetryFrame -State $State -TelemetrySeq ([ref]$TelemetrySeq) -Stopwatch $Stopwatch -LoopStartMs $LoopStart
                 }
 
-                if ($Verbose) { Write-Host ($Strings.ScanFailed -f 60) -ForegroundColor Red }
-                Start-Sleep -Seconds 60
+                if ($Verbose) { Write-Host ($Strings.ScanFailed -f 30) -ForegroundColor Red }
+                Start-Sleep -Seconds 30
 
                 $newId = Find-FanatecDevice $TargetVid $TargetPid
                 if ($newId -ne -1) {
@@ -1774,21 +1777,28 @@ try {
 
                             # Optional auto adjust (main.c rules)
                             if ($AutoGasAdjustEnabled -and
-                                ($BestEstimatePercent -lt $GasDeadzoneOut) -and
-                                ($BestEstimatePercent -ge $AutoGasDeadzoneMin)) {
+                                ($BestEstimatePercent -lt $GasDeadzoneOut)) {
 
-                                $GasDeadzoneOut = $BestEstimatePercent
-                                $State.gas_deadzone_out = $GasDeadzoneOut
+                                if ($BestEstimatePercent -ge $AutoGasDeadzoneMin) {
+                                    $GasDeadzoneOut = $BestEstimatePercent
+                                    $State.gas_deadzone_out = $GasDeadzoneOut
 
-                                # Recompute full-min and mirror into telemetry
-                                $GasFullMin = [uint32][math]::Floor(($AxisMax * $GasDeadzoneOut) / 100.0)
-                                $State.gasFullMin = $GasFullMin
+                                    # Recompute full-min and mirror into telemetry
+                                    $GasFullMin = [uint32][math]::Floor(($AxisMax * $GasDeadzoneOut) / 100.0)
+                                    $State.gasFullMin = $GasFullMin
 
-                                $msg = $Strings.AlertAutoAdjust -f $GasDeadzoneOut
-                                if ($Verbose) { Write-Host $msg -ForegroundColor Cyan }
-                                if ($Tts) { $Synth.SpeakAsync($msg) | Out-Null }
+                                    $msg = $Strings.AlertAutoAdjust -f $GasDeadzoneOut
+                                    if ($Verbose) { Write-Host $msg -ForegroundColor Cyan }
+                                    if ($Tts) { $Synth.SpeakAsync($msg) | Out-Null }
 
-                                $State.gas_auto_adjust_applied = 1
+                                    $State.gas_auto_adjust_applied = 1
+                                } else {
+                                    $msg = $Strings.AlertBelowMinimum -f $BestEstimatePercent, $AutoGasDeadzoneMin
+                                    if ($Verbose) { Write-Host $msg -ForegroundColor Yellow }
+                                    if ($Tts) { $Synth.SpeakAsync($msg) | Out-Null }
+
+                                    $State.gas_deadzone_minimum_breached = 1
+                                }
                             }
                         }
 

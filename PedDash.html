@@ -384,6 +384,16 @@
           return `New deadzone estimation: ${estStr}%`;
         }
       },
+      gas_deadzone_minimum_breached: {
+        type: "Alert",
+        message: f => {
+          const est = Number(f.best_estimate_percent);
+          const min = Number(f.auto_gas_deadzone_minimum);
+          const estStr = Number.isFinite(est) ? est.toFixed(1).replace(/\.0+$/, '') : (f.best_estimate_percent ?? "?");
+          const minStr = Number.isFinite(min) ? min.toFixed(1).replace(/\.0+$/, '') : (f.auto_gas_deadzone_minimum ?? "?");
+          return `WARNING: Estimated deadzone ${estStr}%, below minimum ${minStr}%. Raise deadzone in game or reconnect controller.`;
+        }
+      },
       gas_auto_adjust_applied: {
         type: "Info",
         message: f => {
@@ -650,9 +660,9 @@
       { title: "Pedal Metrics", keys: ['gas_physical_pct', 'gas_logical_pct', 'brake_physical_pct', 'brake_logical_pct', 'clutch_physical_pct', 'clutch_logical_pct'] },
       { title: "Raw Inputs", keys: ['rawGas', 'gasValue', 'rawBrake', 'brakeValue', 'rawClutch', 'clutchValue', 'axisMax', 'axis_normalization_enabled', 'joy_ID', 'joy_Flags'] },
       { title: "Logic State", keys: ['isRacing', 'peakGasInWindow', 'best_estimate_percent', 'lastFullThrottleTime', 'lastGasActivityTime', 'repeatingClutchCount'] },
-      { title: "Pedal Tuning", keys: ['gas_deadzone_in', 'gas_deadzone_out', 'brake_deadzone_in', 'brake_deadzone_out', 'clutch_deadzone_in', 'clutch_deadzone_out', 'gas_min_usage_percent', 'gas_window', 'gas_timeout', 'auto_gas_deadzone_enabled'] },
+      { title: "Pedal Tuning", keys: ['gas_deadzone_in', 'gas_deadzone_out', 'brake_deadzone_in', 'brake_deadzone_out', 'clutch_deadzone_in', 'clutch_deadzone_out', 'gas_min_usage_percent', 'gas_window', 'gas_timeout', 'auto_gas_deadzone_enabled', 'auto_gas_deadzone_minimum'] },
       { title: "Latency (ms)", keys: ['lagTotal', 'lagE2E', 'lagPaint', 'handlerToPaintMs', 'producerLagMs', 'queueWaitMs', 'lagDash', 'jsProcessMs', 'lastFetchCycleMs', 'activeUpdateInterval', 'queueAgeOldestMs', 'queueSpanMs', 'fullLoopTime_ms', 'metricLoopProcessMs', 'metricHttpProcessMs', 'metricTtsSpeakMs'] },
-      { title: "Event Flags", keys: ['gas_alert_triggered', 'clutch_alert_triggered', 'gas_auto_adjust_applied', 'gas_estimate_decreased', 'controller_disconnected', 'controller_reconnected'] },
+      { title: "Event Flags", keys: ['gas_alert_triggered', 'clutch_alert_triggered', 'gas_auto_adjust_applied', 'gas_estimate_decreased', 'gas_deadzone_minimum_breached', 'controller_disconnected', 'controller_reconnected'] },
       { title: "Diagnostics", keys: ['pedDashGetCount', 'algoMode', 'framesReceivedLastFetch', 'framesInBatch', 'telemetry_sequence', 'telemetry_sequence_gap', 'batchId', 'deviceReadStartUnixMs', 'deviceReadDurationMs', 'sampleAtUnixMs', 'enqueueAtUnixMs', 'sendAtUnixMs', 'bridgeEnqueueAtUnixMs', 'bridgeServedAtUnixMs', 'receivedAtUnixMs', 'currentTime', 'pendingFrameCount'] }
     ];
 
@@ -704,6 +714,7 @@ const TELE_DEFS = {
   gas_window:  { label: "Gas Window",  short: "gas_window: Seconds", long: "Seconds allowed without reaching full throttle (while isRacing) before a drift alert can fire. (Source: FanatecPedals / Producer)" },
   gas_timeout: { label: "Gas Timeout", short: "gas_timeout: Seconds", long: "Seconds of gas inactivity before isRacing auto-pauses (suppresses alerts/estimation until activity resumes). (Source: FanatecPedals / Producer)" },
   auto_gas_deadzone_enabled: { label: "Auto Adjust", short: "auto_gas_deadzone_enabled: Auto DZ-out", long: "When 1, producer may automatically reduce gas_deadzone_out down toward best_estimate_percent (respecting the configured minimum) and raise gas_auto_adjust_applied. (Source: FanatecPedals / Producer)" },
+  auto_gas_deadzone_minimum: { label: "Auto Min %", short: "auto_gas_deadzone_minimum: Floor %", long: "Lowest gas_deadzone_out value auto-adjust is allowed to apply. If best_estimate_percent falls below this floor, the producer keeps the current deadzone and raises gas_deadzone_minimum_breached. (Source: FanatecPedals / Producer)" },
   // --- Latency & Timing (ms) ---
   lagTotal: { label: "Total Latency", short: "lagTotal: Sample→JS handler ms", long: "End-to-end latency from pedal sample to this JS handler running. Uses per-frame timestamps: sampleAtUnixMs → enqueueAtUnixMs → sendAtUnixMs → Date.now(). (Source: PedDash / UI)" },
   lagE2E: { label: "E2E Latency", short: "lagE2E: sampleAt→handler ms", long: "Explicit sampleAtUnixMs → JS handler wall-clock latency (Date.now at handler entry). Independent of enqueue/send timestamps. (Source: PedDash / UI)" },
@@ -732,6 +743,7 @@ const TELE_DEFS = {
   clutch_alert_triggered: { label: "Evt: Clutch", short: "clutch_alert_triggered: Noise alert", long: "Set to 1 on the frame where clutch noise/rudder alert is raised (repeatingClutchCount reached threshold). Resets next frame. (Source: FanatecPedals / Producer)" },
   gas_auto_adjust_applied: { label: "Evt: AutoAdj", short: "gas_auto_adjust_applied: Auto DZ-out", long: "Set to 1 on the frame where gas_deadzone_out was automatically reduced. Resets next frame. (Source: FanatecPedals / Producer)" },
   gas_estimate_decreased: { label: "Evt: EstDec", short: "gas_estimate_decreased: New best est", long: "Set to 1 when best_estimate_percent decreases and is announced (subject to cooldown rules). Resets next frame. (Source: FanatecPedals / Producer)" },
+  gas_deadzone_minimum_breached: { label: "Evt: MinBreach", short: "gas_deadzone_minimum_breached: Below minimum", long: "Set to 1 on the frame where best_estimate_percent falls below auto_gas_deadzone_minimum and a manual-action warning is raised. Resets next frame. (Source: FanatecPedals / Producer)" },
   controller_disconnected: { label: "Evt: Disc", short: "controller_disconnected: Latched state", long: "Latched state: 1 while the device is disconnected. Transition to 1 publishes a frame; cleared on reconnect. (Source: FanatecPedals / Producer)" },
   controller_reconnected: { label: "Evt: Reconn", short: "controller_reconnected: One-shot", long: "One-shot flag: 1 on the reconnect frame, then cleared next frame. (Source: FanatecPedals / Producer)" },
 
@@ -795,6 +807,7 @@ const TELE_DEFS = {
       gas_window: { label: "Gas Window", short: "gas_window: Seconds", long: "Duration checked for full throttle events. (Source: PedMon)" },
       gas_timeout: { label: "Gas Timeout", short: "gas_timeout: Seconds", long: "Seconds of idle before assuming paused. (Source: PedMon)" },
       auto_gas_deadzone_enabled: { label: "Auto Adjust", short: "auto_gas_deadzone_enabled: Boolean", long: "If 1, PedMon lowers DZ Out automatically. (Source: PedMon)" },
+      auto_gas_deadzone_minimum: { label: "Auto Min %", short: "auto_gas_deadzone_minimum: Percent", long: "Lowest deadzone-out value auto-adjust may apply before manual intervention is required. (Source: PedMon)" },
 
       lagTotal: { label: "Total Latency", short: "lagTotal: Total pipeline ms", long: "Total time across C (PedMon), PS (PedBridge), and JS (PedDash). (Source: PedDash)" },
       fullLoopTime_ms: { label: "C Loop", short: "fullLoopTime_ms: PedMon ms", long: "Processing time of the C monitor loop. (Source: PedMon)" },
@@ -808,6 +821,7 @@ const TELE_DEFS = {
       clutch_alert_triggered: { label: "Evt: Clutch", short: "clutch_alert_triggered: Flag", long: "Fired when rudder noise is detected. (Source: PedMon)" },
       gas_auto_adjust_applied: { label: "Evt: AutoAdj", short: "gas_auto_adjust_applied: Flag", long: "Fired when deadzone was adjusted. (Source: PedMon)" },
       gas_estimate_decreased: { label: "Evt: EstDec", short: "gas_estimate_decreased: Flag", long: "Fired on new estimation discovery. (Source: PedMon)" },
+      gas_deadzone_minimum_breached: { label: "Evt: MinBreach", short: "gas_deadzone_minimum_breached: Flag", long: "Fired when the estimated deadzone falls below the configured auto-adjust minimum and the user must adjust manually. (Source: PedMon)" },
       controller_disconnected: { label: "Evt: Disc", short: "controller_disconnected: Flag", long: "Fired when pedal device is lost. (Source: PedMon)" },
       controller_reconnected: { label: "Evt: Reconn", short: "controller_reconnected: Flag", long: "Fired when device is re-found. (Source: PedMon)" },
 
