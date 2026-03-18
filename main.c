@@ -696,10 +696,10 @@ run_loop(Options *opt, Runtime *rt, JOYINFOEX *info)
             printf("Error reading joystick (Code %u)\n", (unsigned)mr);
 
             if (opt->target_vendor_id != 0 && opt->target_product_id != 0) {
-                ALERT_LIT(opt, "Controller disconnected. Waiting 60 seconds.");
+                ALERT_LIT(opt, "Controller disconnected. Waiting 30 seconds.");
 
                 for (;;) {
-                    Sleep(60000);
+                    Sleep(30000);
 
                     int new_id = find_joystick(opt->target_vendor_id, opt->target_product_id);
                     if (new_id != -1) {
@@ -718,7 +718,7 @@ run_loop(Options *opt, Runtime *rt, JOYINFOEX *info)
 
                     ALERT_LIT(opt, "Controller not found. Retrying.");
                     if (opt->verbose)
-                        printf("Scan failed. Retrying in 60s...\n");
+                        printf("Scan failed. Retrying in 30s...\n");
                 }
 
                 continue;
