@@ -1,0 +1,51 @@
+<Page
+    x:Class="PedDash.Pages.DataMapPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:PedDash.Pages"
+    Background="Transparent">
+    
+    <Grid Padding="20">
+        <ScrollViewer>
+            <ItemsControl ItemsSource="{Binding Groups}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <StackPanel Margin="0,0,0,30">
+                            <!-- Group Header -->
+                            <TextBlock Text="{Binding GroupName}" Foreground="#00f3ff" FontSize="18" FontWeight="Bold" Margin="0,0,0,10" />
+                            <Border BorderBrush="#333" BorderThickness="0,0,0,1" Margin="0,0,0,15" />
+                            
+                            <!-- Cards Grid -->
+                            <ItemsControl ItemsSource="{Binding Cards}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <ItemsWrapGrid Orientation="Horizontal" ItemWidth="260" ItemHeight="110"/>
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Background="#161620" BorderBrush="#333" BorderThickness="1" CornerRadius="6" Padding="15" Margin="0,0,15,15" Tapped="Card_Tapped">
+                                            <FlyoutBase.AttachedFlyout>
+                                                <Flyout>
+                                                    <StackPanel MaxWidth="300" Spacing="10">
+                                                        <TextBlock Text="{Binding Title}" FontWeight="Bold" Foreground="#00f3ff" />
+                                                        <TextBlock Text="{Binding ShortDesc}" TextWrapping="Wrap" Foreground="#ccc" />
+                                                    </StackPanel>
+                                                </Flyout>
+                                            </FlyoutBase.AttachedFlyout>
+                                            <StackPanel>
+                                                <TextBlock Text="{Binding Title}" Foreground="#777" FontSize="12" TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Text="{Binding Value}" Foreground="{Binding ValueColor}" FontSize="24" FontWeight="Bold" FontFamily="Consolas" Margin="0,5,0,0" />
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            
+                        </StackPanel>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+    </Grid>
+</Page>

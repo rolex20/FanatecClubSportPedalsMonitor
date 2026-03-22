@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#11141d"/>
+      <stop offset="100%" stop-color="#282e42"/>
+    </linearGradient>
+    <linearGradient id="pd" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ebf5ff"/>
+      <stop offset="100%" stop-color="#83dcff"/>
+    </linearGradient>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="230" fill="url(#bg)"/>
+  <rect x="126" y="126" width="772" height="772" rx="188" fill="none" stroke="#00f3ff" stroke-width="18"/>
+  <rect x="178" y="178" width="668" height="668" rx="155" fill="#070a12"/>
+  <polyline points="250,738 374,596 498,640 646,378 780,420"
+            fill="none" stroke="#48ff92" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="180" y="560" font-family="Segoe UI, Arial, sans-serif" font-size="420" font-weight="700"
+        fill="url(#pd)" stroke="#00f3ff" stroke-width="8" letter-spacing="-20">PD</text>
+</svg>

@@ -1,0 +1,237 @@
+<Page
+    x:Class="PedDash.Pages.ConfigPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    Background="Transparent">
+    <ScrollViewer>
+        <Grid Padding="20">
+            <StackPanel Spacing="20">
+                <TextBlock Text="Configuration" Foreground="#00f3ff" FontSize="24" FontWeight="Bold" />
+                <TextBlock x:Name="TxtConfigPath" Foreground="#777" TextWrapping="WrapWholeWords" FontFamily="Consolas" />
+                <Border x:Name="RestartBanner" Background="#241b00" BorderBrush="#ffbf00" BorderThickness="1" CornerRadius="8" Padding="12" Visibility="Collapsed">
+                    <TextBlock Text="Some saved settings require an app restart before the runtime picks them up." Foreground="#ffbf00" TextWrapping="Wrap" />
+                </Border>
+
+                <Border Background="#161620" BorderBrush="#333" BorderThickness="1" CornerRadius="8" Padding="20">
+                    <StackPanel Spacing="15">
+                        <TextBlock Text="Runtime" Foreground="#00f3ff" FontWeight="Bold" />
+                        <Line Stretch="Fill" Stroke="#444" X2="1" />
+                        <Grid ColumnSpacing="20" ToolTipService.ToolTip="Choose whether PedDash reads real hardware or uses synthetic pedal data. Use Simulation on machines without pedals connected.">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="220" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Input Mode" Foreground="#aaa" VerticalAlignment="Center" />
+                            <ComboBox Grid.Column="1" x:Name="CboInputMode" Width="240" HorizontalAlignment="Left" Background="#000" Foreground="White" BorderBrush="#444" SelectionChanged="CboInputMode_SelectionChanged">
+                                <ComboBoxItem Content="Simulation" />
+                                <ComboBoxItem Content="Hardware" />
+                            </ComboBox>
+                        </Grid>
+                        <Grid ColumnSpacing="20" ToolTipService.ToolTip="How long the worker waits between pedal reads. Lower values feel more responsive but use more CPU. Safe to change while the app is running.">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="220" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Sleep Time (ms)" Foreground="#aaa" VerticalAlignment="Center" />
+                            <TextBox Grid.Column="1" x:Name="TxtSleepTime" Tag="SleepTime" Width="200" HorizontalAlignment="Left" FontFamily="Consolas" Background="#000" Foreground="White" BorderBrush="#444" LostFocus="SettingText_LostFocus" />
+                        </Grid>
+                        <Grid ColumnSpacing="20" ToolTipService.ToolTip="How many recent frames and events PedDash keeps in memory for charts and exports. Higher values preserve more history but use more RAM.">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="220" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Max History" Foreground="#aaa" VerticalAlignment="Center" />
+                            <TextBox Grid.Column="1" x:Name="TxtHistory" Tag="MaxHistory" Width="200" HorizontalAlignment="Left" FontFamily="Consolas" Background="#000" Foreground="White" BorderBrush="#444" LostFocus="SettingText_LostFocus" />
+                        </Grid>
+                        <Grid ColumnSpacing="20" ToolTipService.ToolTip="Controls how the gauges visually settle between updates. SmoothConvergence feels softer; FrameLock snaps directly to each new value.">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="220" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Render Smoothing" Foreground="#aaa" VerticalAlignment="Center" />
+                            <ComboBox Grid.Column="1" x:Name="CboSmoothing" Width="280" HorizontalAlignment="Left" Background="#000" Foreground="White" BorderBrush="#444" SelectionChanged="CboSmoothing_SelectionChanged">
+                                <ComboBoxItem Content="SmoothConvergence" />
+                                <ComboBoxItem Content="FrameLock" />
+                            </ComboBox>
+                        </Grid>
+                        <Grid ColumnSpacing="20" ToolTipService.ToolTip="Caps meaningful redraw work independently from your monitor refresh rate. Auto uses 30 FPS, which is usually enough for pedal data without wasting GPU/UI work.">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="220" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Render FPS Cap" Foreground="#aaa" VerticalAlignment="Center" />
+                            <ComboBox Grid.Column="1" x:Name="CboRenderCap" Width="240" HorizontalAlignment="Left" Background="#000" Foreground="White" BorderBrush="#444" SelectionChanged="CboRenderCap_SelectionChanged">
+                                <ComboBoxItem Content="Auto" />
+                                <ComboBoxItem Content="10" />
+                                <ComboBoxItem Content="20" />
+                                <ComboBoxItem Content="30" />
+                                <ComboBoxItem Content="60" />
+                            </ComboBox>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <Border Background="#161620" BorderBrush="#333" BorderThickness="1" CornerRadius="8" Padding="20">
+                    <StackPanel Spacing="15">
+                        <TextBlock Text="Hardware &amp; Process" Foreground="#00f3ff" FontWeight="Bold" />
+                        <Line Stretch="Fill" Stroke="#444" X2="1" />
+                        <Grid ColumnSpacing="20" ToolTipService.ToolTip="Specific WinMM joystick slot to read from. Use the detected device ID when hardware mode is active. Usually only change this before driving.">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="220" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Joystick ID" Foreground="#aaa" VerticalAlignment="Center" />
+                            <TextBox Grid.Column="1" x:Name="TxtJoystickId" Tag="JoystickId" Width="200" HorizontalAlignment="Left" FontFamily="Consolas" Background="#000" Foreground="White" BorderBrush="#444" LostFocus="SettingText_LostFocus" />
+                        </Grid>
+                        <Grid ColumnSpacing="20" ToolTipService.ToolTip="USB vendor ID used for reconnect scanning. Leave this as the Fanatec value unless you know your device changed. Restart required.">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="220" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Vendor ID" Foreground="#aaa" VerticalAlignment="Center" />
+                            <TextBox Grid.Column="1" x:Name="TxtVendorId" Tag="VendorId" Width="200" HorizontalAlignment="Left" FontFamily="Consolas" Background="#000" Foreground="White" BorderBrush="#444" LostFocus="SettingText_LostFocus" />
+                        </Grid>
+                        <Grid ColumnSpacing="20" ToolTipService.ToolTip="USB product ID used for reconnect scanning. Change only if you are targeting a different Fanatec hardware profile. Restart required.">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="220" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Product ID" Foreground="#aaa" VerticalAlignment="Center" />
+                            <TextBox Grid.Column="1" x:Name="TxtProductId" Tag="ProductId" Width="200" HorizontalAlignment="Left" FontFamily="Consolas" Background="#000" Foreground="White" BorderBrush="#444" LostFocus="SettingText_LostFocus" />
+                        </Grid>
+                        <Grid ColumnSpacing="20" ToolTipService.ToolTip="Low-level WinMM flag mask that decides which axes and data format are requested. Treat this as an advanced compatibility setting. Restart required.">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="220" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Joy Flags" Foreground="#aaa" VerticalAlignment="Center" />
+                            <TextBox Grid.Column="1" x:Name="TxtJoyFlags" Tag="JoyFlags" Width="200" HorizontalAlignment="Left" FontFamily="Consolas" Background="#000" Foreground="White" BorderBrush="#444" LostFocus="SettingText_LostFocus" />
+                        </Grid>
+                        <Grid ColumnSpacing="20" ToolTipService.ToolTip="Optional CPU affinity mask for advanced tuning, specially for Intel hybrid processors with efficient and performance cores. Most users should leave this alone unless they already know why they need it. Restart required.  Set to 0 to avoid any affinity changes.">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="220" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Affinity Mask" Foreground="#aaa" VerticalAlignment="Center" />
+                            <TextBox Grid.Column="1" x:Name="TxtAffinityMask" Tag="AffinityMask" Width="260" HorizontalAlignment="Left" FontFamily="Consolas" Background="#000" Foreground="White" BorderBrush="#444" LostFocus="SettingText_LostFocus" />
+                        </Grid>
+                        <StackPanel Orientation="Horizontal" Spacing="20">
+                            <ToggleSwitch x:Name="TglAxisNorm" Header="Axis Normalization" Toggled="SettingToggle_Toggled" Tag="AxisNormalizationEnabled" ToolTipService.ToolTip="Inverts raw pedal axes so released pedals read as idle and pressed pedals climb upward. This is the normal Fanatec-friendly mode." />
+                            <ToggleSwitch x:Name="TglIdle" Header="Idle Priority" Toggled="SettingToggle_Toggled" Tag="Idle" ToolTipService.ToolTip="Runs the process at idle priority to stay very gentle on the system. Useful only if you are deliberately trying to minimize background impact. Restart required." />
+                            <ToggleSwitch x:Name="TglBelowNormal" Header="Below Normal Priority" Toggled="SettingToggle_Toggled" Tag="BelowNormal" ToolTipService.ToolTip="Runs the process at below-normal priority. This is a milder version of Idle priority. Restart required." />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <Border Background="#161620" BorderBrush="#333" BorderThickness="1" CornerRadius="8" Padding="20">
+                    <StackPanel Spacing="15">
+                        <TextBlock Text="Gas Monitoring" Foreground="#00f3ff" FontWeight="Bold" />
+                        <Line Stretch="Fill" Stroke="#444" X2="1" />
+                        <StackPanel Orientation="Horizontal" Spacing="20">
+                            <ToggleSwitch x:Name="TglMonitorGas" Header="Monitor Gas" Toggled="SettingToggle_Toggled" Tag="MonitorGas" ToolTipService.ToolTip="Turns on gas-drift monitoring. Leave this on if you want the app to watch for lost full-throttle travel." />
+                            <ToggleSwitch x:Name="TglEstimateGas" Header="Estimate Deadzone" Toggled="SettingToggle_Toggled" Tag="EstimateGasDeadzone" ToolTipService.ToolTip="Lets PedDash estimate a better gas deadzone-out value from observed pedal travel. Safe to use while driving, but understand what the alerts mean first." />
+                        </StackPanel>
+                        <Grid ColumnSpacing="20" ToolTipService.ToolTip="Idle threshold for gas. Values at or below this percentage are treated as released pedal input.">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="220" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Gas Deadzone In" Foreground="#aaa" VerticalAlignment="Center" />
+                            <TextBox Grid.Column="1" x:Name="TxtGasDeadzoneIn" Tag="GasDeadzoneIn" Width="200" HorizontalAlignment="Left" FontFamily="Consolas" Background="#000" Foreground="White" BorderBrush="#444" LostFocus="SettingText_LostFocus" />
+                        </Grid>
+                        <Grid ColumnSpacing="20" ToolTipService.ToolTip="Full-travel threshold for gas. This is the current percentage PedDash considers true full throttle.">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="220" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Gas Deadzone Out" Foreground="#aaa" VerticalAlignment="Center" />
+                            <TextBox Grid.Column="1" x:Name="TxtGasDeadzoneOut" Tag="GasDeadzoneOut" Width="200" HorizontalAlignment="Left" FontFamily="Consolas" Background="#000" Foreground="White" BorderBrush="#444" LostFocus="SettingText_LostFocus" />
+                        </Grid>
+                        <Grid ColumnSpacing="20" ToolTipService.ToolTip="How long PedDash waits for the pedal to reach full throttle before deciding your gas travel may be drifting.">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="220" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Gas Window (s)" Foreground="#aaa" VerticalAlignment="Center" />
+                            <TextBox Grid.Column="1" x:Name="TxtGasWindow" Tag="GasWindow" Width="200" HorizontalAlignment="Left" FontFamily="Consolas" Background="#000" Foreground="White" BorderBrush="#444" LostFocus="SettingText_LostFocus" />
+                        </Grid>
+                        <Grid ColumnSpacing="20" ToolTipService.ToolTip="Cooldown between gas-drift warnings. Higher values keep the app from nagging too often during a session.">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="220" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Gas Cooldown (s)" Foreground="#aaa" VerticalAlignment="Center" />
+                            <TextBox Grid.Column="1" x:Name="TxtGasCooldown" Tag="GasCooldown" Width="200" HorizontalAlignment="Left" FontFamily="Consolas" Background="#000" Foreground="White" BorderBrush="#444" LostFocus="SettingText_LostFocus" />
+                        </Grid>
+                        <Grid ColumnSpacing="20" ToolTipService.ToolTip="If the gas pedal stays inactive this long, PedDash assumes you are in menus or paused and stops racing-state logic until activity resumes.">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="220" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Gas Timeout (s)" Foreground="#aaa" VerticalAlignment="Center" />
+                            <TextBox Grid.Column="1" x:Name="TxtGasTimeout" Tag="GasTimeout" Width="200" HorizontalAlignment="Left" FontFamily="Consolas" Background="#000" Foreground="White" BorderBrush="#444" LostFocus="SettingText_LostFocus" />
+                        </Grid>
+                        <Grid ColumnSpacing="20" ToolTipService.ToolTip="Minimum gas usage required before drift logic and estimate logic take a sample seriously. This helps ignore tiny touches or noise.">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="220" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Gas Min Usage %" Foreground="#aaa" VerticalAlignment="Center" />
+                            <TextBox Grid.Column="1" x:Name="TxtGasMinUsage" Tag="GasMinUsage" Width="200" HorizontalAlignment="Left" FontFamily="Consolas" Background="#000" Foreground="White" BorderBrush="#444" LostFocus="SettingText_LostFocus" />
+                        </Grid>
+                        <Grid ColumnSpacing="20" ToolTipService.ToolTip="Lowest deadzone-out value auto-adjust is allowed to apply. If PedDash estimates something lower than this, it will warn you instead of changing the threshold.">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="220" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Auto Gas Deadzone Min" Foreground="#aaa" VerticalAlignment="Center" />
+                            <TextBox Grid.Column="1" x:Name="TxtAutoGasMin" Tag="AutoGasDeadzoneMin" Width="200" HorizontalAlignment="Left" FontFamily="Consolas" Background="#000" Foreground="White" BorderBrush="#444" LostFocus="SettingText_LostFocus" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <Border Background="#161620" BorderBrush="#333" BorderThickness="1" CornerRadius="8" Padding="20">
+                    <StackPanel Spacing="15">
+                        <TextBlock Text="Brake / Clutch / Audio" Foreground="#00f3ff" FontWeight="Bold" />
+                        <Line Stretch="Fill" Stroke="#444" X2="1" />
+                        <StackPanel Orientation="Horizontal" Spacing="20">
+                            <ToggleSwitch x:Name="TglMonitorClutch" Header="Monitor Clutch" Toggled="SettingToggle_Toggled" Tag="MonitorClutch" ToolTipService.ToolTip="Turns on clutch/rudder-noise monitoring. Use this if you want PedDash to watch for repeating clutch-axis jitter when gas is idle." />
+                            <ToggleSwitch x:Name="TglTts" Header="Enable TTS" Toggled="SettingToggle_Toggled" Tag="EffectiveTts" ToolTipService.ToolTip="Enables spoken warnings and status messages. Helpful during racing when you do not want to look away from the screen." />
+                            <ToggleSwitch x:Name="TglTelemetry" Header="Telemetry" Toggled="SettingToggle_Toggled" Tag="Telemetry" IsEnabled="False" ToolTipService.ToolTip="Legacy compatibility value from older console/script flows. The current WinUI desktop app always feeds its own internal runtime/UI pipeline, so this toggle is shown for INI compatibility only." />
+                        </StackPanel>
+                        <Grid ColumnSpacing="20" ToolTipService.ToolTip="Idle threshold for brake. If not explicitly set in the INI, this follows the gas deadzone-in behavior.">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="220" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Brake Deadzone In" Foreground="#aaa" VerticalAlignment="Center" />
+                            <TextBox Grid.Column="1" x:Name="TxtBrakeDeadzoneIn" Tag="BrakeDeadzoneIn" Width="200" HorizontalAlignment="Left" FontFamily="Consolas" Background="#000" Foreground="White" BorderBrush="#444" LostFocus="SettingText_LostFocus" />
+                        </Grid>
+                        <Grid ColumnSpacing="20" ToolTipService.ToolTip="Full-travel threshold for brake. If not explicitly set in the INI, this follows the gas deadzone-out behavior.">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="220" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Brake Deadzone Out" Foreground="#aaa" VerticalAlignment="Center" />
+                            <TextBox Grid.Column="1" x:Name="TxtBrakeDeadzoneOut" Tag="BrakeDeadzoneOut" Width="200" HorizontalAlignment="Left" FontFamily="Consolas" Background="#000" Foreground="White" BorderBrush="#444" LostFocus="SettingText_LostFocus" />
+                        </Grid>
+                        <Grid ColumnSpacing="20" ToolTipService.ToolTip="Idle threshold for clutch. If not explicitly set in the INI, this follows the gas deadzone-in behavior.">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="220" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Clutch Deadzone In" Foreground="#aaa" VerticalAlignment="Center" />
+                            <TextBox Grid.Column="1" x:Name="TxtClutchDeadzoneIn" Tag="ClutchDeadzoneIn" Width="200" HorizontalAlignment="Left" FontFamily="Consolas" Background="#000" Foreground="White" BorderBrush="#444" LostFocus="SettingText_LostFocus" />
+                        </Grid>
+                        <Grid ColumnSpacing="20" ToolTipService.ToolTip="Full-travel threshold for clutch. If not explicitly set in the INI, this follows the gas deadzone-out behavior.">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="220" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Clutch Deadzone Out" Foreground="#aaa" VerticalAlignment="Center" />
+                            <TextBox Grid.Column="1" x:Name="TxtClutchDeadzoneOut" Tag="ClutchDeadzoneOut" Width="200" HorizontalAlignment="Left" FontFamily="Consolas" Background="#000" Foreground="White" BorderBrush="#444" LostFocus="SettingText_LostFocus" />
+                        </Grid>
+                        <Grid ColumnSpacing="20" ToolTipService.ToolTip="Tolerance band for clutch-noise detection. Larger values are less sensitive; smaller values catch subtle repeating noise.">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="220" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Margin" Foreground="#aaa" VerticalAlignment="Center" />
+                            <TextBox Grid.Column="1" x:Name="TxtMargin" Tag="Margin" Width="200" HorizontalAlignment="Left" FontFamily="Consolas" Background="#000" Foreground="White" BorderBrush="#444" LostFocus="SettingText_LostFocus" />
+                        </Grid>
+                        <Grid ColumnSpacing="20" ToolTipService.ToolTip="How many consecutive near-identical clutch samples are required before PedDash calls it a rudder/noise issue.">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="220" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Clutch Repeat" Foreground="#aaa" VerticalAlignment="Center" />
+                            <TextBox Grid.Column="1" x:Name="TxtClutchRepeat" Tag="ClutchRepeat" Width="200" HorizontalAlignment="Left" FontFamily="Consolas" Background="#000" Foreground="White" BorderBrush="#444" LostFocus="SettingText_LostFocus" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <Border Background="#161620" BorderBrush="#333" BorderThickness="1" CornerRadius="8" Padding="20">
+                    <StackPanel Spacing="15">
+                        <TextBlock Text="Diagnostics" Foreground="#00f3ff" FontWeight="Bold" />
+                        <TextBlock Text="These values are kept for legacy INI compatibility with the older console and script tools. The current WinUI app does not actively use them." Foreground="#888" TextWrapping="Wrap" />
+                        <Line Stretch="Fill" Stroke="#444" X2="1" />
+                        <StackPanel Orientation="Horizontal" Spacing="20">
+                            <ToggleSwitch x:Name="TglVerbose" Header="Verbose" Toggled="SettingToggle_Toggled" Tag="Verbose" IsEnabled="False" ToolTipService.ToolTip="Legacy console/script verbosity flag. Shown for compatibility with old INI files, but not used by the current WinUI desktop runtime." />
+                            <ToggleSwitch x:Name="TglDebugRaw" Header="Debug Raw" Toggled="SettingToggle_Toggled" Tag="DebugRaw" IsEnabled="False" ToolTipService.ToolTip="Legacy console/script raw-axis debug mode. The current WinUI app does not use this flag, but it is preserved for compatibility." />
+                            <ToggleSwitch x:Name="TglNoBanner" Header="No Console Banner" Toggled="SettingToggle_Toggled" Tag="NoConsoleBanner" IsEnabled="False" ToolTipService.ToolTip="Legacy console startup-banner option. It has no active role in the current desktop UI." />
+                        </StackPanel>
+                        <Grid ColumnSpacing="20" ToolTipService.ToolTip="Legacy loop-count setting used by older console/script variants. The current WinUI app runs continuously and ignores this setting.">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="220" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Iterations" Foreground="#aaa" VerticalAlignment="Center" />
+                            <TextBox Grid.Column="1" x:Name="TxtIterations" Tag="Iterations" Width="200" HorizontalAlignment="Left" FontFamily="Consolas" Background="#000" Foreground="White" BorderBrush="#444" LostFocus="SettingText_LostFocus" IsEnabled="False" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </Grid>
+    </ScrollViewer>
+</Page>

@@ -1,0 +1,60 @@
+<Page
+    x:Class="PedDash.Pages.RacingPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:PedDash.Controls"
+    xmlns:models="using:PedDash.Models"
+    Background="Transparent">
+    <Grid Padding="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="150" />
+        </Grid.RowDefinitions>
+        
+        <Grid Grid.Row="0" Margin="0,0,0,80">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            
+            <!-- Clutch (Left) -->
+            <controls:Win2DGaugeControl Grid.Column="0" x:Name="GaugeClutch" Label="CLUTCH" AccentColor="#00f3ff" Margin="10"
+                ToolTipService.ToolTip="Physical vs Game Input. Inner ring glows Orange on rudder noise." />
+                
+            <!-- Brake (Center, matching sizing) -->
+            <controls:Win2DGaugeControl Grid.Column="1" x:Name="GaugeBrake" Label="BRAKE" AccentColor="#ff3333" Margin="10"
+                ToolTipService.ToolTip="Physical vs Game Input. Shows raw braking pressure vs logical active pressure." />
+                
+            <!-- Gas (Right) -->
+            <controls:Win2DGaugeControl Grid.Column="2" x:Name="GaugeGas" Label="GAS" AccentColor="#00ff66" Margin="10"
+                ToolTipService.ToolTip="Physical vs Game Input. Inner ring glows Red on drift limit. Outer ring is physical travel." />
+        </Grid>
+
+        <!-- Status Strip -->
+        <Border Grid.Row="0" VerticalAlignment="Bottom" HorizontalAlignment="Center" Background="#0f0f16" BorderBrush="#333" BorderThickness="1" CornerRadius="8" Padding="10" Margin="0,0,0,10">
+            <StackPanel Orientation="Horizontal" Spacing="15">
+                <Border x:Name="PillDrift" Background="#222" BorderBrush="#222" BorderThickness="1" CornerRadius="4" Padding="15,5">
+                    <TextBlock Text="DRIFT ALERT" Foreground="#555" FontWeight="Bold" FontSize="12" />
+                </Border>
+                <Border x:Name="PillNoise" Background="#222" BorderBrush="#222" BorderThickness="1" CornerRadius="4" Padding="15,5">
+                    <TextBlock Text="RUDDER NOISE" Foreground="#555" FontWeight="Bold" FontSize="12" />
+                </Border>
+                <Border x:Name="PillAuto" Background="#222" BorderBrush="#222" BorderThickness="1" CornerRadius="4" Padding="15,5">
+                    <TextBlock Text="AUTO-ADJUST" Foreground="#555" FontWeight="Bold" FontSize="12" />
+                </Border>
+                <Border x:Name="PillRacing" Background="#222" BorderBrush="#222" BorderThickness="1" CornerRadius="4" Padding="15,5">
+                    <TextBlock Text="RACING" Foreground="#555" FontWeight="Bold" FontSize="12" />
+                </Border>
+            </StackPanel>
+        </Border>
+
+        <!-- Minimal Event Log / Action Timeline -->
+        <Border Grid.Row="1" Background="#161620" BorderBrush="#333" BorderThickness="1" CornerRadius="8" Padding="15" Margin="0,20,0,0">
+            <StackPanel>
+                <TextBlock Text="ACTION TIMELINE" Foreground="#bbb" FontFamily="Consolas" Margin="0,0,0,10" />
+                <ListView x:Name="LvEvents" Background="Transparent" SelectionMode="None" />
+            </StackPanel>
+        </Border>
+    </Grid>
+</Page>

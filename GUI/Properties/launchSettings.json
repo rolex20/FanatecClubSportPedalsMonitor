@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "PedDash (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "PedDash (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

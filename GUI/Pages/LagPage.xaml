@@ -1,0 +1,97 @@
+<Page
+    x:Class="PedDash.Pages.LagPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:PedDash.Controls"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    Background="Transparent">
+    <Grid Padding="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- Metric Cards Grid -->
+        <Grid Grid.Row="0" Margin="0,0,0,20">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <Border Grid.Column="0" Background="#0f0f16" BorderBrush="#333" BorderThickness="1" CornerRadius="8" Padding="15" Margin="0,0,10,0" Tapped="Card_Tapped">
+                <FlyoutBase.AttachedFlyout>
+                    <Flyout>
+                        <StackPanel MaxWidth="300" Spacing="10">
+                            <TextBlock Text="TICK PERIOD" FontWeight="Bold" Foreground="#00f3ff" />
+                            <TextBlock Text="This measures the amount of time since the last simulated frame was generated. If this number fluctuates wildly, the hardware or simulator is not outputting data at a stable rate." TextWrapping="Wrap" Foreground="#ccc" />
+                        </StackPanel>
+                    </Flyout>
+                </FlyoutBase.AttachedFlyout>
+                <StackPanel HorizontalAlignment="Center">
+                    <TextBlock Text="TICK PERIOD" Foreground="#bbb" FontSize="12" HorizontalAlignment="Center" TextDecorations="Underline" />
+                    <TextBlock x:Name="TxtLagTick" Text="-- ms" Foreground="White" FontSize="24" FontWeight="Bold" FontFamily="Consolas" HorizontalAlignment="Center" />
+                    <TextBlock x:Name="TxtLagTickAvg" Text="(avg -- ms)" Foreground="#555" FontSize="12" FontFamily="Consolas" HorizontalAlignment="Center" Margin="0,5,0,0" />
+                </StackPanel>
+            </Border>
+            <Border Grid.Column="1" Background="#0f0f16" BorderBrush="#333" BorderThickness="1" CornerRadius="8" Padding="15" Margin="0,0,10,0" Tapped="Card_Tapped">
+                <FlyoutBase.AttachedFlyout>
+                    <Flyout>
+                        <StackPanel MaxWidth="300" Spacing="10">
+                            <TextBlock Text="READ MS" FontWeight="Bold" Foreground="#00f3ff" />
+                            <TextBlock Text="This is the time spent actively reading data from hardware memory or API. In a physical setup, a high number here means the USB polling or API connection is taking too long." TextWrapping="Wrap" Foreground="#ccc" />
+                        </StackPanel>
+                    </Flyout>
+                </FlyoutBase.AttachedFlyout>
+                <StackPanel HorizontalAlignment="Center">
+                    <TextBlock Text="READ MS" Foreground="#bbb" FontSize="12" HorizontalAlignment="Center" TextDecorations="Underline" />
+                    <TextBlock x:Name="TxtLagRead" Text="-- ms" Foreground="#00f3ff" FontSize="24" FontWeight="Bold" FontFamily="Consolas" HorizontalAlignment="Center" />
+                    <TextBlock x:Name="TxtLagReadAvg" Text="(avg -- ms)" Foreground="#555" FontSize="12" FontFamily="Consolas" HorizontalAlignment="Center" Margin="0,5,0,0" />
+                </StackPanel>
+            </Border>
+            <Border Grid.Column="2" Background="#0f0f16" BorderBrush="#333" BorderThickness="1" CornerRadius="8" Padding="15" Margin="0,0,10,0" Tapped="Card_Tapped">
+                <FlyoutBase.AttachedFlyout>
+                    <Flyout>
+                        <StackPanel MaxWidth="300" Spacing="10">
+                            <TextBlock Text="COMPUTE MS" FontWeight="Bold" Foreground="#00f3ff" />
+                            <TextBlock Text="Represents the CPU time spent processing physics rules, edge detection, and preparing logical data before drawing. If this is high, the device CPU is bottlenecking." TextWrapping="Wrap" Foreground="#ccc" />
+                        </StackPanel>
+                    </Flyout>
+                </FlyoutBase.AttachedFlyout>
+                <StackPanel HorizontalAlignment="Center">
+                    <TextBlock Text="COMPUTE MS" Foreground="#bbb" FontSize="12" HorizontalAlignment="Center" TextDecorations="Underline" />
+                    <TextBlock x:Name="TxtLagCompute" Text="-- ms" Foreground="#ff00ff" FontSize="24" FontWeight="Bold" FontFamily="Consolas" HorizontalAlignment="Center" />
+                    <TextBlock x:Name="TxtLagComputeAvg" Text="(avg -- ms)" Foreground="#555" FontSize="12" FontFamily="Consolas" HorizontalAlignment="Center" Margin="0,5,0,0" />
+                </StackPanel>
+            </Border>
+            <Border Grid.Column="3" Background="#0f0f16" BorderBrush="#333" BorderThickness="1" CornerRadius="8" Padding="15" Tapped="Card_Tapped">
+                <FlyoutBase.AttachedFlyout>
+                    <Flyout>
+                        <StackPanel MaxWidth="300" Spacing="10">
+                            <TextBlock Text="PAINT MS" FontWeight="Bold" Foreground="#00f3ff" />
+                            <TextBlock Text="The total end-to-end time from receiving the tick to actually drawing the Win2D visual graphs onto the screen. This is your true perceived latency." TextWrapping="Wrap" Foreground="#ccc" />
+                        </StackPanel>
+                    </Flyout>
+                </FlyoutBase.AttachedFlyout>
+                <StackPanel HorizontalAlignment="Center">
+                    <TextBlock Text="PAINT MS" Foreground="#bbb" FontSize="12" HorizontalAlignment="Center" TextDecorations="Underline" />
+                    <TextBlock x:Name="TxtLagPaint" Text="-- ms" Foreground="#ffff00" FontSize="24" FontWeight="Bold" FontFamily="Consolas" HorizontalAlignment="Center" />
+                    <TextBlock x:Name="TxtLagPaintAvg" Text="(avg -- ms)" Foreground="#555" FontSize="12" FontFamily="Consolas" HorizontalAlignment="Center" Margin="0,5,0,0" />
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <StackPanel Grid.Row="1" Spacing="10">
+            <TextBlock Text="LATENCY HISTORY (ms)" Foreground="White" FontFamily="Consolas" FontWeight="Bold" />
+            <Grid Height="400">
+                <!-- Multi-layered charts -->
+                <local:Win2DChartControl x:Name="ChartLagTick" LineColor="#ffffff" FillArea="True" MaxValue="1000" />
+                <local:Win2DChartControl x:Name="ChartLagRead" LineColor="#00f3ff" FillArea="False" MaxValue="1000" />
+                <local:Win2DChartControl x:Name="ChartLagCompute" LineColor="#ff00ff" FillArea="False" MaxValue="1000" />
+                <local:Win2DChartControl x:Name="ChartLagPaint" LineColor="#ffff00" FillArea="False" MaxValue="1000" />
+            </Grid>
+        </StackPanel>
+    </Grid>
+</Page>
