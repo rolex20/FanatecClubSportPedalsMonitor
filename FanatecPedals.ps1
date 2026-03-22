@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     FanatecPedals.ps1 v2.6.6
     The Unified Fanatec Pedals Monitor and Telemetry Bridge.
@@ -1537,6 +1537,17 @@ try {
                     $State.controller_disconnected = 0
                     $State.controller_reconnected  = 1
                     $State.last_reconnect_time_ms  = [uint32][Environment]::TickCount
+
+                    if ($ConfigFile) {
+                        Apply-ConfigFile -Path $ConfigFile
+                        $State.gas_deadzone_in = $GasDeadzoneIn
+                        $State.gas_deadzone_out = $GasDeadzoneOut
+                        $State.brake_deadzone_in = $BrakeDeadzoneIn
+                        $State.brake_deadzone_out = $BrakeDeadzoneOut
+                        $State.clutch_deadzone_in = $ClutchDeadzoneIn
+                        $State.clutch_deadzone_out = $ClutchDeadzoneOut
+                        if ($Verbose) { Write-Host "Baseline Config reloaded." -ForegroundColor Cyan }
+                    }
 
                     # main.c recomputes these on reconnect (in case resolution/flags differ)
                     $AxisMax    = if (($JoyFlags -band 256) -ne 0) { 1023 } else { 65535 }
