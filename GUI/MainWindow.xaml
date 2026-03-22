@@ -42,7 +42,7 @@
                 </Grid.ColumnDefinitions>
 
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Grid.Column="0">
-                    <TextBlock Text="PedDash" Foreground="#00f3ff" FontWeight="Bold" FontSize="20" />
+                    <TextBlock Text="Fanatec Pedals Monitor" Foreground="#00f3ff" FontWeight="Bold" FontSize="20" />
                     <TextBlock Text="Telemetry Arcade" Foreground="#777" FontSize="12" Margin="10,6,0,0" />
                 </StackPanel>
 

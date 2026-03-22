@@ -46,6 +46,7 @@ namespace PedDash.Models
         public string RenderSmoothingMode { get; set; } = "SmoothConvergence";
         public string RenderFpsCap { get; set; } = "Auto";
         public int SignalsWaveformHeightPercent { get; set; } = 100;
+        public bool SignalsHideBrake { get; set; }
         public bool BrakeDeadzoneInExplicit { get; set; }
         public bool BrakeDeadzoneOutExplicit { get; set; }
         public bool ClutchDeadzoneInExplicit { get; set; }

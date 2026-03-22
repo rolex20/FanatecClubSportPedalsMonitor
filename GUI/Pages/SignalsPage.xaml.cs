@@ -48,6 +48,7 @@ namespace PedDash.Pages
 
             PedalConfig config = MainWindow.Runtime.Config;
             _waveformHeightPercent = PedalConfig.NormalizeSignalsWaveformHeightPercent(config.SignalsWaveformHeightPercent);
+            TglHideBrake.IsOn = config.SignalsHideBrake;
             _lastSleepTime = Math.Max(1, config.SleepTime);
             UpdateWaveformHeightUi();
             ApplyChartLayout();
@@ -167,6 +168,7 @@ namespace PedDash.Pages
         private void TglHideBrake_Toggled(object sender, RoutedEventArgs e)
         {
             ApplyChartLayout();
+            MainWindow.Runtime.UpdateConfig(config => config.SignalsHideBrake = TglHideBrake.IsOn, false);
         }
 
         private void BtnWaveHeightDown_Click(object sender, RoutedEventArgs e)

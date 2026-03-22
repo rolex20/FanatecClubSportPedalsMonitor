@@ -268,6 +268,7 @@ namespace PedDash.Services
                 Key("General", "RenderSmoothingMode", cfg => cfg.RenderSmoothingMode, (cfg, value) => cfg.RenderSmoothingMode = value),
                 Key("General", "RenderFpsCap", cfg => cfg.RenderFpsCap, (cfg, value) => cfg.RenderFpsCap = value),
                 Key("General", "SignalsWaveformHeightPercent", cfg => cfg.SignalsWaveformHeightPercent.ToString(CultureInfo.InvariantCulture), (cfg, value) => cfg.SignalsWaveformHeightPercent = ParseInt(value, cfg.SignalsWaveformHeightPercent)),
+                Key("General", "SignalsHideBrake", cfg => FormatBool(cfg.SignalsHideBrake), (cfg, value) => cfg.SignalsHideBrake = ParseBool(value)),
 
                 Key("Gas", "MonitorGas", cfg => FormatBool(cfg.MonitorGas), (cfg, value) => cfg.MonitorGas = ParseBool(value)),
                 Key("Gas", "GasDeadzoneIn", cfg => cfg.GasDeadzoneIn.ToString(CultureInfo.InvariantCulture), (cfg, value) => cfg.GasDeadzoneIn = ParseInt(value, cfg.GasDeadzoneIn)),
