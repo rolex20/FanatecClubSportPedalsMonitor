@@ -2,15 +2,5 @@
 # This .gitignore file was automatically created by Microsoft(R) Visual Studio.
 ################################################################################
 
-/.vs/FanatecClubSportPedalsMonitor/CopilotIndices/18.3.511.5503
-/.vs/FanatecClubSportPedalsMonitor.slnx/FileContentIndex
-/.vs/FanatecClubSportPedalsMonitor.slnx/v18/Browse.VC.db
-/.vs/FanatecClubSportPedalsMonitor.slnx/v18/Browse.VC.db-shm
-/.vs/FanatecClubSportPedalsMonitor.slnx/v18/Browse.VC.db-wal
-/.vs/FanatecClubSportPedalsMonitor.slnx/v18/Browse.VC.opendb
-/.vs/ProjectSettings.json
-/.vs/slnx.sqlite
-/.vs/slnx.sqlite-journal
 /build
-/.vs/FanatecClubSportPedalsMonitor.slnx/v18
 /.vs
