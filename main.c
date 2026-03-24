@@ -1357,7 +1357,7 @@ speak_ipc(const char *text, size_t text_len)
     static const char pipe_name[] = "\\\\.\\pipe\\ipc_pipe_vr_server_commands";
     static const char prefix[]    = "SPEAK ";
 
-    char buffer[512];
+    char buffer[256];
     size_t prefix_len = sizeof(prefix) - 1;
 
     assert(prefix_len + text_len + 1 < sizeof(buffer));
@@ -1390,7 +1390,7 @@ speak_external(const char *text, size_t text_len)
         "dummy1stArg -NoProfile -NoLogo -ExecutionPolicy Bypass -WindowStyle Hidden "
         "-File .\\saySomething.ps1 \"";
 
-    char cmdline[512];
+    char cmdline[256];
     const size_t prefix_len = sizeof(arg_prefix) - 1;
     size_t len = prefix_len + text_len;
 
