@@ -260,6 +260,9 @@ Example MSYS2 UCRT64 / MinGW-w64 build:
 gcc -O3 -Wall -Wextra -std=c11 -o fanatecmonitor.exe main.c -lwinmm
 ```
 
+MSYS2 / UCRT64 gotcha on my dev PC:
+run `C:/msys64/ucrt64/bin/gcc.exe` with the process working directory set to `C:/msys64/ucrt64/bin`, like in [.vscode/tasks.json](./.vscode/tasks.json). If you launch the same compiler from the repo root, the toolchain may fail in confusing ways even though the command line looks correct.
+
 For my 14700K E-cores, this is the my aggressive build:
 
 ```bash
