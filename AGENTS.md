@@ -1,6 +1,7 @@
 # AGENTS.md
 
-Read [docs/coding-culture.md](docs/coding-culture.md) before making code changes in this repo.
+Before making code changes to main.c in this repo, read the file [docs/coding-culture.md](docs/coding-culture.md)
+
 That file is the full source of truth for coding style, comment style, optimization culture,
 and collaboration workflow. Do not replace it with a summary; follow it as written.
 
