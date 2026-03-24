@@ -235,15 +235,15 @@ static void runtime_recompute_thresholds(const Options *opt, Runtime *rt);
 static void runtime_reset_detectors(const Options *opt, Runtime *rt);
 
 /* Alerting (TTS always enabled) */
-static void alert_msg(const Options *opt, const char *text, size_t text_len, int log_to_console);
+static void alert_msg(const Options *opt, const char *text, size_t text_len);
 static void speak_ipc(const char *text, size_t text_len);
 static void speak_external(const char *text, size_t text_len);
 
 /* ALERT_LIT is for string literals whose length is known at compile time with sizeof */
-#define ALERT_LIT(opt, s) alert_msg((opt), (s), sizeof(s) - 1, 1)
+#define ALERT_LIT(opt, s) alert_msg((opt), (s), sizeof(s) - 1)
 
 /* ALERT_BUF is for char * but we are *carefully* not using that */ 
-#define ALERT_BUF(opt, s) alert_msg((opt), (s), strlen(s), 1)
+#define ALERT_BUF(opt, s) alert_msg((opt), (s), strlen(s))
 
 /* ------------------------------------------------------------------------- */
 /* Main “story” */
@@ -1259,50 +1259,48 @@ runtime_reset_detectors(const Options *opt, Runtime *rt)
 /* Alerts (TTS always enabled) */
 
 static void
-alert_msg(const Options *opt, const char *text, size_t text_len, int log_to_console)
+alert_msg(const Options *opt, const char *text, size_t text_len)
 {
-    if (log_to_console) {
-        SYSTEMTIME t;
-        char prefix[22];
+    SYSTEMTIME t;
+    char prefix[22];
 
-        GetLocalTime(&t);
+    GetLocalTime(&t);
 
-        /*
-         * MICRO-OPTIMIZATION: BYPASS printf()
-         *
-         * printf() is the easy version, but we micro-optimize this path because
-         * we can.
-         *
-         * The old code is left here as a reminder of the simple baseline:
-         *
-         * printf("[%.4d-%.2d-%.2d %.2d:%.2d:%.2d] %.*s\n",
-         *        t.wYear, t.wMonth, t.wDay,
-         *        t.wHour, t.wMinute, t.wSecond,
-         *        (int)text_len, text);
-         *
-         * But this file is already built around fixed templates, explicit byte
-         * geometry, and zero-waste formatting. So we give the console prefix
-         * the same treatment.
-         */
-        build_log_timestamp_prefix(prefix, &t);
+    /*
+     * MICRO-OPTIMIZATION: BYPASS printf()
+     *
+     * printf() is the easy version, but we micro-optimize this path because
+     * we can.
+     *
+     * The old code is left here as a reminder of the simple baseline:
+     *
+     * printf("[%.4d-%.2d-%.2d %.2d:%.2d:%.2d] %.*s\n",
+     *        t.wYear, t.wMonth, t.wDay,
+     *        t.wHour, t.wMinute, t.wSecond,
+     *        (int)text_len, text);
+     *
+     * But this file is already built around fixed templates, explicit byte
+     * geometry, and zero-waste formatting. So we give the console prefix
+     * the same treatment.
+     */
+    build_log_timestamp_prefix(prefix, &t);
 
-        /*
-         * FAST OUTPUT:
-         * We write exact byte counts directly to stdout.
-         *
-         *   - prefix: fixed 22-byte burst
-         *   - text:   caller-supplied pointer + exact length
-         *   - '\n':   one final byte
-         *
-         * No format parser. No strlen() walk. No payload copy into a giant
-         * temporary buffer. Just the bytes we want, in the order we want them.
-         */
+    /*
+     * FAST OUTPUT:
+     * We write exact byte counts directly to stdout.
+     *
+     *   - prefix: fixed 22-byte burst
+     *   - text:   caller-supplied pointer + exact length
+     *   - '\n':   one final byte
+     *
+     * No format parser. No strlen() walk. No payload copy into a giant
+     * temporary buffer. Just the bytes we want, in the order we want them.
+     */
 
-        /* please don't ruin the 3 fwrites below with --no_buffer */
-        fwrite(prefix, 1, sizeof(prefix), stdout);
-        fwrite(text,   1, text_len,      stdout);
-        fputc('\n', stdout); 
-    }
+    /* please don't ruin the 3 fwrites below with --no_buffer */
+    fwrite(prefix, 1, sizeof(prefix), stdout);
+    fwrite(text,   1, text_len,      stdout);
+    fputc('\n', stdout); 
 
     if (opt->ipc_enabled)
         speak_ipc(text, text_len);
