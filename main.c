@@ -8,18 +8,19 @@
  *   - Remove --tts/--no-tts: program ALWAYS speaks alerts.
  *   - Keep CPU usage extremely low.
  *
- * Build (MSYS2 MINGW64):
+ * Build (MSYS2 UCRT64 MINGW64, GCC 15.2.0):
  *   gcc -O3 -Wall -Wextra -std=c11 -o fanatecmonitor.exe main.c -lwinmm
  *   in my 14700K E-Cores:
  *   Can Compile with: gcc -O3 -march=gracemont -flto -fwhole-program -mtune=gracemont -Wall -Wextra -std=c11 main.c -o fanatecmonitor.exe -lwinmm
  *   (Added -fwhole-program: Since we only have one translation unit, this lets the linker 
  *   ruthlessly strip and inline code it normally couldn't touch).
  *
- * With NetBeans IDE 18, I had to dd c:\windows\system32\winmm.dll in
+ * Originally with NetBeans IDE 18, I had to dd c:\windows\system32\winmm.dll in
  * Run->Set-Project-Configuration->Customize->Build->Linker->Libraries->Add-Library-File
  * according to the required by joyGetPosEx() en https://learn.microsoft.com/en-us/previous-versions/ms709354(v=vs.85)
  * 
- * NetBeans not used (latest version ruined the c plugin), now switched to VsCode, and MSYS2 UCRT64 MINGW64/w gcc 15
+ * NetBeans not used anymore (latest version ruined the c plugin), 
+ * now switched to VsCode, MSYS2 UCRT64 MINGW64, and GCC 15.2.0
  */
 
 #include <stdio.h>
@@ -139,17 +140,30 @@ typedef struct __attribute__((aligned(64))) Options {
 
 /*
  * PERFECT STRUCT PACKING
- * Variables accessed 1000x a second are placed together in the top 48 bytes
- * (The "Hot" Cache Line). Variables accessed only during timeouts/alerts
- * are pushed lower down to the "Cold" Cache Line.
+ * The first 64-byte cache line is where the real action happens:
+ * gas drift tracking, gas timing windows, threshold checks, and now the
+ * estimator window start too.
+ *
+ * Why the estimator field got promoted:
+ *   Lately we run the estimator a lot, which means estimate_window_start_ms
+ *   stopped being "warm" state and became a real hot-path input. So we moved
+ *   it up into cache line 0 on purpose.
+ *
+ * What paid the price:
+ *   last_clutch moved down into the next line. That is a conscious trade:
+ *   we are biasing the struct toward the gas/estimator path we hammer every
+ *   cycle, and letting the clutch-only path pay that extra fetch if needed.
+ *
+ * In other words: this is not generic prettiness. This is hand-placed data
+ * for the path we actually love and actually run.
  */
 typedef struct __attribute__((aligned(64))) Runtime {
-    /* --- HOT CACHE LINE (Read/Written constantly in the loop) --- */
+    /* --- CACHE LINE 0: gas drift + estimator hot path --- */
     DWORD peak_gas_in_window; /* Gas drift detector */
     DWORD estimate_window_peak_gas; /* TRACK RAW PEAK: Avoids division in hot path */
     DWORD last_full_throttle_ms; /* Gas drift detector */
     DWORD last_gas_activity_ms; /* Gas drift detector */
-    DWORD last_clutch; /* Clutch detector */
+    DWORD estimate_window_start_ms; /* Estimator: promoted into the first cache line */
 
     /* Axis scaling */
     DWORD axis_max; /* 1023 in raw mode; else 65535 */
@@ -164,13 +178,13 @@ typedef struct __attribute__((aligned(64))) Runtime {
     int   clutch_repeat_count; /* Clutch detector */
     BOOL  is_racing; /* Gas drift detector */
 
-    /* --- WARM / COLD CACHE LINE (Checked/Updated rarely) --- */
     DWORD gas_timeout_ms;
     DWORD gas_window_ms;
     DWORD gas_cooldown_ms;
     DWORD last_gas_alert_ms; /* Gas drift detector */
 
-    DWORD estimate_window_start_ms; /* Estimator */
+    /* --- CACHE LINE 1: clutch + colder estimator / auto-adjust state --- */
+    DWORD last_clutch; /* Clutch detector: intentionally pushed out for estimator locality */
     DWORD last_estimate_print_ms; /* Estimator */
 
     int   gas_deadzone_out_current;
@@ -210,6 +224,8 @@ static int  find_joystick(int targetVid, int targetPid);
 /* Formatting helper (no snprintf) */
 static char *append_digits_from_right(uint32_t value, char special_char,
                                       char *last_valid, size_t total_buf_size);
+static void build_log_timestamp_prefix(char out[static 22], const SYSTEMTIME *t);
+static void patch_percent_3(char *dst, unsigned value);
 
 /* Axis normalization */
 FORCE_INLINE DWORD normalize_pedal_axis(int enabled, DWORD raw, DWORD axis_max);
@@ -931,20 +947,29 @@ handle_gas_estimator(const Options * restrict opt, Runtime * restrict rt, DWORD 
                     runtime_recompute_thresholds(opt, rt);
 
                     static char log_buf[] =
-                        "[AutoAdjust] gas-deadzone-out updated to *** (min=***)";
+                        "[AutoAdjust] gas-deadzone-out updated to *** (min=***)\n";
 
-                    char *updated_last = log_buf + 43; /* last '*' in first "***" */
-                    char *minimum_last = log_buf + 52; /* last '*' in second "***" */
+                    /*
+                     * Fixed numeric windows inside log_buf:
+                     *
+                     *   "[AutoAdjust] gas-deadzone-out updated to *** (min=***)\n"
+                     *                                            41 42 43      50 51 52
+                     *
+                     * We keep the template as plain English text and patch only
+                     * the two tiny numeric slots. If future-us edits the wording,
+                     * these offsets must be updated to match the new geometry.
+                     *
+                     * And yes, this goes out with fwrite() instead of puts():
+                     * we know the exact byte count at compile time, so there is
+                     * no reason to pay for a generic '\0' scan just to rediscover
+                     * a length the compiler already knows.
+                     */
+                    patch_percent_3(log_buf + 41,
+                                    (unsigned)rt->gas_deadzone_out_current);
+                    patch_percent_3(log_buf + 50,
+                                    (unsigned)opt->auto_gas_deadzone_minimum);
 
-                    size_t updated_span = (size_t)(updated_last - log_buf + 1);
-                    size_t minimum_span = (size_t)(minimum_last - log_buf + 1);
-
-                    append_digits_from_right((uint32_t)rt->gas_deadzone_out_current, ' ',
-                                             updated_last, updated_span);
-                    append_digits_from_right((uint32_t)opt->auto_gas_deadzone_minimum, '=',
-                                             minimum_last, minimum_span);
-
-                    puts(log_buf);
+                    fwrite(log_buf, 1, sizeof(log_buf) - 1, stdout);
                 } else {
                     static char speak_buf[] =
                         "WARNING: Estimated deadzone *** percent, below minimum ***. "
@@ -1054,6 +1079,122 @@ append_digits_from_right(uint32_t value, char special_char,
     return digits_start;
 }
 
+/*
+ * build_log_timestamp_prefix()
+ *
+ * MICRO-OPTIMIZED TIMESTAMP PREFIX:
+ * We know exactly what the console log prefix looks like:
+ *
+ *     "[YYYY-MM-DD HH:MM:SS] "
+ *
+ * That is a fixed 22-byte geometry, every single time. No surprises.
+ *
+ * So instead of asking printf() to wake up its giant generic formatting engine
+ * just to print six tiny decimal fields, we hardwire the byte layout and inject
+ * the digits directly where they belong. No format-string parser. No varargs
+ * dance. No width decoding. No generic integer formatting machinery.
+ *
+ * This is the fun kind of systems-programming overkill: tiny, explicit, stable,
+ * and perfectly matched to the job.
+ *
+ * GCC 15.2.0 is very good at turning division/modulo by compile-time constants
+ * like 10 into lean multiply/shift sequences, so these decimal extractions are
+ * about as cheap as straightforward C can reasonably make them.
+ *
+ * Why the buffer has no trailing '\0':
+ *   The caller writes this prefix with fwrite(), so a terminator would be dead
+ *   weight. We keep it as an exact 22-byte burst because that is exactly what
+ *   we want to push to stdout.
+ *
+ * Byte layout inside `out`:
+ *   [0]      '['
+ *   [1..4]   year
+ *   [5]      '-'
+ *   [6..7]   month
+ *   [8]      '-'
+ *   [9..10]  day
+ *   [11]     ' '
+ *   [12..13] hour
+ *   [14]     ':'
+ *   [15..16] minute
+ *   [17]     ':'
+ *   [18..19] second
+ *   [20]     ']'
+ *   [21]     ' '
+ */
+static void
+build_log_timestamp_prefix(char out[static 22], const SYSTEMTIME *t)
+{
+    unsigned y = (unsigned)t->wYear;
+
+    out[0]  = '[';
+    out[5]  = '-';
+    out[8]  = '-';
+    out[11] = ' ';
+    out[14] = ':';
+    out[17] = ':';
+    out[20] = ']';
+    out[21] = ' ';
+
+    out[4] = (char)('0' + (y % 10u)); y /= 10u;
+    out[3] = (char)('0' + (y % 10u)); y /= 10u;
+    out[2] = (char)('0' + (y % 10u)); y /= 10u;
+    out[1] = (char)('0' + y);
+
+    out[6]  = (char)('0' + (t->wMonth  / 10u));
+    out[7]  = (char)('0' + (t->wMonth  % 10u));
+    out[9]  = (char)('0' + (t->wDay    / 10u));
+    out[10] = (char)('0' + (t->wDay    % 10u));
+    out[12] = (char)('0' + (t->wHour   / 10u));
+    out[13] = (char)('0' + (t->wHour   % 10u));
+    out[15] = (char)('0' + (t->wMinute / 10u));
+    out[16] = (char)('0' + (t->wMinute % 10u));
+    out[18] = (char)('0' + (t->wSecond / 10u));
+    out[19] = (char)('0' + (t->wSecond % 10u));
+}
+
+/*
+ * patch_percent_3()
+ *
+ * EXTREME SPECIALIZATION FOR A TINY FIELD:
+ * append_digits_from_right() is our beautiful general-purpose decimal patcher,
+ * but this site is even more constrained:
+ *
+ *   - exactly 3 output bytes
+ *   - exactly one right-aligned percentage field
+ *   - value is bounded to 0..100
+ *
+ * That means we can drop the generic backward scan, drop the sentinel search,
+ * and blast the digits straight into the destination window with fixed work.
+ *
+ * Examples:
+ *   0   -> "  0"
+ *   7   -> "  7"
+ *   42  -> " 42"
+ *   100 -> "100"
+ *
+ * This helper does not append '\0'. It patches only the three bytes that
+ * belong to the numeric field and leaves the surrounding English template
+ * untouched.
+ */
+static void
+patch_percent_3(char *dst, unsigned value)
+{
+    assert(dst != NULL);
+    assert(value <= 100u);
+
+    if (value == 100u) {
+        dst[0] = '1';
+        dst[1] = '0';
+        dst[2] = '0';
+        return;
+    }
+
+    dst[0] = ' ';
+    dst[1] = (value >= 10u) ? (char)('0' + (value / 10u)) : ' ';
+    dst[2] = (char)('0' + (value % 10u));
+}
+
 /* ------------------------------------------------------------------------- */
 /* Axis normalization + runtime init */
 
@@ -1122,11 +1263,45 @@ alert_msg(const Options *opt, const char *text, size_t text_len, int log_to_cons
 {
     if (log_to_console) {
         SYSTEMTIME t;
+        char prefix[22];
+
         GetLocalTime(&t);
-        printf("[%.4d-%.2d-%.2d %.2d:%.2d:%.2d] %.*s\n",
-               t.wYear, t.wMonth, t.wDay,
-               t.wHour, t.wMinute, t.wSecond,
-               (int)text_len, text);
+
+        /*
+         * MICRO-OPTIMIZATION: BYPASS printf()
+         *
+         * printf() is the easy version, but we micro-optimize this path because
+         * we can.
+         *
+         * The old code is left here as a reminder of the simple baseline:
+         *
+         * printf("[%.4d-%.2d-%.2d %.2d:%.2d:%.2d] %.*s\n",
+         *        t.wYear, t.wMonth, t.wDay,
+         *        t.wHour, t.wMinute, t.wSecond,
+         *        (int)text_len, text);
+         *
+         * But this file is already built around fixed templates, explicit byte
+         * geometry, and zero-waste formatting. So we give the console prefix
+         * the same treatment.
+         */
+        build_log_timestamp_prefix(prefix, &t);
+
+        /*
+         * FAST OUTPUT:
+         * We write exact byte counts directly to stdout.
+         *
+         *   - prefix: fixed 22-byte burst
+         *   - text:   caller-supplied pointer + exact length
+         *   - '\n':   one final byte
+         *
+         * No format parser. No strlen() walk. No payload copy into a giant
+         * temporary buffer. Just the bytes we want, in the order we want them.
+         */
+
+        /* please don't ruin the 3 fwrites below with --no_buffer */
+        fwrite(prefix, 1, sizeof(prefix), stdout);
+        fwrite(text,   1, text_len,      stdout);
+        fputc('\n', stdout); 
     }
 
     if (opt->ipc_enabled)
