@@ -83,14 +83,13 @@
             "command": "C:/msys64/ucrt64/bin/gcc.exe",
             "args":[
                 "-O2",
-                "-s",
                 "-m64",
                 "-Wall",
                 "-Wextra",
                 "-std=c11",
                 "${workspaceFolder}\\*.c",
                 "-o",
-                "${workspaceFolder}\\build\\fanatecmonitor_ReleaseO2.exe",
+                "${workspaceFolder}\\build\\fanatecmonitor.exe",
                 "-lwinmm"
             ],
             "options": {
